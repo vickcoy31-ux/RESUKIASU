@@ -187,30 +187,30 @@ jobs:
 
           strings -a arch/arm64/boot/Image.gz | grep -E 'Linux version|5\.10\.' | head -n 10 || true
 
-          cat > ../STAGE1_RESULT.txt <<EOF
-RESUKISU V2 - KERNEL VALID STAGE 1
-===================================
-Stock reference:
-  kernel: 5.10.205-android12-9-28698995
-  source evidence: stock.config + stock kernel + vendor_boot DTB
-
-Source scaffold:
-  repository: $GTA9_REPO
-  branch: $GTA9_BRANCH
-  commit: $(git rev-parse HEAD)
-  kernel version: $(make -s kernelversion)
-
-RESUKISU / KernelSU:
-  NOT INCLUDED IN THIS STAGE
-
-Build:
-  Image.gz: PASS
-  mt8781_gta9wifi_eur_open_00.dtb: PASS
-
-IMPORTANT:
-  The source scaffold remains 5.10.218 unless a source-level 5.10.205 lineage
-  is established. No version string was falsified.
-EOF
+          printf '%s\n' \
+            "RESUKISU V2 - KERNEL VALID STAGE 1" \
+            "===================================" \
+            "Stock reference:" \
+            "  kernel: 5.10.205-android12-9-28698995" \
+            "  source evidence: stock.config + stock kernel + vendor_boot DTB" \
+            "" \
+            "Source scaffold:" \
+            "  repository: $GTA9_REPO" \
+            "  branch: $GTA9_BRANCH" \
+            "  commit: $(git rev-parse HEAD)" \
+            "  kernel version: $(make -s kernelversion)" \
+            "" \
+            "RESUKISU / KernelSU:" \
+            "  NOT INCLUDED IN THIS STAGE" \
+            "" \
+            "Build:" \
+            "  Image.gz: PASS" \
+            "  mt8781_gta9wifi_eur_open_00.dtb: PASS" \
+            "" \
+            "IMPORTANT:" \
+            "  The source scaffold remains 5.10.218 unless a source-level 5.10.205 lineage is established." \
+            "  No version string was falsified." \
+            > ../STAGE1_RESULT.txt
 
       - name: Upload Stage 1 kernel artifacts
         uses: actions/upload-artifact@v4
