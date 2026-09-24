@@ -85,8 +85,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git clone --depth 1 --branch "$GTA9_BRANCH" --single-branch "$GTA9_REPO" kernel_samsung_gta9
+          git clone \
+            --depth 1 \
+            --branch "$GTA9_BRANCH" \
+            --single-branch \
+            --recurse-submodules \
+            "$GTA9_REPO" \
+            kernel_samsung_gta9
           cd kernel_samsung_gta9
+
+          test -f .gitmodules
+          git submodule status --recursive
+          test -f KernelSU/kernel/Kconfig
+          test -f drivers/kernelsu/Kconfig
 
           SOURCE_COMMIT="$(git rev-parse HEAD)"
           KERNEL_VERSION="$(make -s kernelversion)"
