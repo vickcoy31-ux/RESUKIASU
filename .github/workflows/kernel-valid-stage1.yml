@@ -1,0 +1,224 @@
+name: RESUKISU V2 - Kernel Valid Stage 1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GTA9_REPO: https://github.com/prabhatkrmishra/kernel_samsung_gta9.git
+  GTA9_BRANCH: "15.0"
+  STOCK_RUN_ID: "36024263408"
+  STOCK_ARTIFACT: RESUKISU-V2-stock-510205-deep-compare
+  ARCH: arm64
+  LLVM: "1"
+
+jobs:
+  kernel-valid-stage1:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout RESUKISU repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison flex build-essential \
+            git curl wget python3 cpio rsync \
+            libssl-dev libelf-dev libncurses5-dev \
+            device-tree-compiler gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            lz4 xz-utils file
+
+      - name: Download exact stock forensic artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p stock_reference
+          gh run download "$STOCK_RUN_ID" \
+            --repo "${{ github.repository }}" \
+            --name "$STOCK_ARTIFACT" \
+            --dir stock_reference
+
+          test -s stock_reference/stock_audit/stock.config
+          test -s stock_reference/stock_audit/boot/kernel
+          test -s stock_reference/stock_audit/vendor_boot/dtb
+
+          echo "===== STOCK REFERENCE ====="
+          sha256sum stock_reference/stock_audit/stock.config
+          sha256sum stock_reference/stock_audit/boot/kernel
+          sha256sum stock_reference/stock_audit/vendor_boot/dtb
+
+      - name: Clone GTA9 15.0 source
+        run: |
+          set -euo pipefail
+          git clone \
+            --branch "$GTA9_BRANCH" \
+            --single-branch \
+            --recurse-submodules \
+            "$GTA9_REPO" \
+            kernel_samsung_gta9
+
+          cd kernel_samsung_gta9
+
+          echo "===== SOURCE LOCK =====" | tee ../SOURCE_LOCK.txt
+          echo "Repository: $GTA9_REPO" | tee -a ../SOURCE_LOCK.txt
+          echo "Branch: $GTA9_BRANCH" | tee -a ../SOURCE_LOCK.txt
+          echo "Commit: $(git rev-parse HEAD)" | tee -a ../SOURCE_LOCK.txt
+          echo "Source kernel version: $(make -s kernelversion)" | tee -a ../SOURCE_LOCK.txt
+          echo "NOTE: this is the source scaffold; it is NOT claimed to be the exact Samsung 5.10.205 source." | tee -a ../SOURCE_LOCK.txt
+
+      - name: Install Samsung Android kernel Clang r416183b
+        run: |
+          set -euo pipefail
+          mkdir -p toolchain
+          curl -L --fail --retry 3 \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-12.1.0_r7/clang-r416183b.tar.gz" \
+            -o /tmp/clang-r416183b.tar.gz
+          tar -xzf /tmp/clang-r416183b.tar.gz -C toolchain
+
+          test -x toolchain/clang-r416183b/bin/clang || test -x toolchain/bin/clang
+
+          if [ -x toolchain/clang-r416183b/bin/clang ]; then
+            echo "CLANG_DIR=$PWD/toolchain/clang-r416183b" >> "$GITHUB_ENV"
+          else
+            echo "CLANG_DIR=$PWD/toolchain" >> "$GITHUB_ENV"
+          fi
+
+          "$CLANG_DIR/bin/clang" --version
+
+      - name: Prepare stock-derived configuration
+        run: |
+          set -euo pipefail
+          cd kernel_samsung_gta9
+
+          cp ../stock_reference/stock_audit/stock.config .config
+
+          echo "===== STOCK CONFIG BEFORE KCONFIG NORMALIZATION ====="
+          grep -E '^(CONFIG_CUSTOM_PROJECT_OT11|CONFIG_CUSTOM_PROJECT_OT11_WIFI|CONFIG_MTK_FPSGO_V3|CONFIG_ARCH_MEDIATEK|CONFIG_ANDROID=|CONFIG_LTO=|CONFIG_LTO_CLANG=|CONFIG_LTO_CLANG_FULL=)' .config || true
+
+          make ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
+
+          echo "===== NORMALIZED CONFIG CHECK ====="
+          grep -E '^(CONFIG_CUSTOM_PROJECT_OT11|CONFIG_CUSTOM_PROJECT_OT11_WIFI|CONFIG_MTK_FPSGO_V3|CONFIG_ARCH_MEDIATEK|CONFIG_ANDROID=|CONFIG_LTO=|CONFIG_LTO_CLANG=|CONFIG_LTO_CLANG_FULL=)' .config || true
+
+          cp .config ../STOCK_DERIVED_CONFIG_NORMALIZED
+
+      - name: Verify critical X110 stock configuration
+        run: |
+          set -euo pipefail
+          test -s STOCK_DERIVED_CONFIG_NORMALIZED
+
+          required=(
+            CONFIG_CUSTOM_PROJECT_OT11
+            CONFIG_CUSTOM_PROJECT_OT11_WIFI
+            CONFIG_MTK_FPSGO_V3
+            CONFIG_ARCH_MEDIATEK
+            CONFIG_ANDROID
+            CONFIG_LTO
+            CONFIG_LTO_CLANG
+            CONFIG_LTO_CLANG_FULL
+          )
+
+          for key in "${required[@]}"; do
+            grep -q "^$key=" STOCK_DERIVED_CONFIG_NORMALIZED
+          done
+
+          echo "STOCK-DERIVED CONFIG: PASS"
+
+      - name: Build kernel base without RESUKISU or KernelSU changes
+        run: |
+          set -euo pipefail
+          cd kernel_samsung_gta9
+
+          export PATH="$CLANG_DIR/bin:$PATH"
+          export ARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+          export CROSS_COMPILE=aarch64-linux-gnu-
+
+          echo "===== BUILD TOOLCHAIN ====="
+          clang --version | head -n 1
+          ld.lld --version | head -n 1
+          make -s kernelversion
+
+          echo "===== BUILD IMAGE.GZ ====="
+          make -j"$(nproc)" \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            Image.gz
+
+          echo "===== BUILD X110/GTA9 WIFI DTB ====="
+          make -j"$(nproc)" \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            mt8781_gta9wifi_eur_open_00.dtb
+
+      - name: Validate build outputs against stock reference
+        run: |
+          set -euo pipefail
+          cd kernel_samsung_gta9
+
+          test -s arch/arm64/boot/Image.gz
+          test -s arch/arm64/boot/dts/mediatek/mt8781_gta9wifi_eur_open_00.dtb
+
+          echo "===== RESULT ====="
+          echo "Source kernel version: $(make -s kernelversion)"
+          echo "Built Image.gz:"
+          sha256sum arch/arm64/boot/Image.gz
+          echo "Built DTB:"
+          sha256sum arch/arm64/boot/dts/mediatek/mt8781_gta9wifi_eur_open_00.dtb
+          echo
+          echo "Stock kernel:"
+          sha256sum ../stock_reference/stock_audit/boot/kernel
+          echo "Stock vendor_boot DTB:"
+          sha256sum ../stock_reference/stock_audit/vendor_boot/dtb
+
+          strings -a arch/arm64/boot/Image.gz | grep -E 'Linux version|5\.10\.' | head -n 10 || true
+
+          cat > ../STAGE1_RESULT.txt <<EOF
+RESUKISU V2 - KERNEL VALID STAGE 1
+===================================
+Stock reference:
+  kernel: 5.10.205-android12-9-28698995
+  source evidence: stock.config + stock kernel + vendor_boot DTB
+
+Source scaffold:
+  repository: $GTA9_REPO
+  branch: $GTA9_BRANCH
+  commit: $(git rev-parse HEAD)
+  kernel version: $(make -s kernelversion)
+
+RESUKISU / KernelSU:
+  NOT INCLUDED IN THIS STAGE
+
+Build:
+  Image.gz: PASS
+  mt8781_gta9wifi_eur_open_00.dtb: PASS
+
+IMPORTANT:
+  The source scaffold remains 5.10.218 unless a source-level 5.10.205 lineage
+  is established. No version string was falsified.
+EOF
+
+      - name: Upload Stage 1 kernel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: RESUKISU-V2-KERNEL-VALID-STAGE1
+          path: |
+            kernel_samsung_gta9/arch/arm64/boot/Image.gz
+            kernel_samsung_gta9/arch/arm64/boot/dts/mediatek/mt8781_gta9wifi_eur_open_00.dtb
+            STOCK_DERIVED_CONFIG_NORMALIZED
+            SOURCE_LOCK.txt
+            STAGE1_RESULT.txt
