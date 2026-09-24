@@ -89,16 +89,28 @@ jobs:
             --depth 1 \
             --branch "$GTA9_BRANCH" \
             --single-branch \
-            --recurse-submodules \
             "$GTA9_REPO" \
             kernel_samsung_gta9
           cd kernel_samsung_gta9
 
-          test -f .gitmodules
-          git submodule status --recursive
+          # The 14.0 tree contains a KernelSU gitlink, and drivers/kernelsu
+          # is a symlink to ../KernelSU/kernel. Populate that dependency at
+          # the exact commit recorded by the source tree instead of relying
+          # on recursive clone behavior.
+          KSU_SHA="$(git ls-tree HEAD KernelSU | awk '{print $3}')"
+          test -n "$KSU_SHA"
+          test "$KSU_SHA" = "d8ce238c37e413ff33844828a1294aa3fabe7c39"
+
+          rm -rf KernelSU
+          git init -q KernelSU
+          git -C KernelSU remote add origin https://github.com/tiann/KernelSU.git
+          git -C KernelSU fetch --depth 1 origin "$KSU_SHA"
+          git -C KernelSU checkout -q --detach "$KSU_SHA"
+
           test -f KernelSU/kernel/Kconfig
           test -f drivers/kernelsu/Kconfig
 
+          echo "KernelSU commit: $(git -C KernelSU rev-parse HEAD)"
           SOURCE_COMMIT="$(git rev-parse HEAD)"
           KERNEL_VERSION="$(make -s kernelversion)"
 
