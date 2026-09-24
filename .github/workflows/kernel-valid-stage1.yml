@@ -102,6 +102,11 @@ jobs:
           set -euo pipefail
           cd kernel_samsung_gta9
 
+          export PATH="$CLANG_DIR/bin:$PATH"
+          export ARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+
           cp ../stock_reference/stock_audit/stock.config .config
 
           echo "===== STOCK CONFIG BEFORE KCONFIG NORMALIZATION ====="
