@@ -15,7 +15,137 @@ jobs:
   source-audit:
     runs-on: ubuntu-latest
 
+
     steps:
+
+      # ============================================================
+      # 0. STOCK AP BINARY FORENSICS
+      # Uses the AP files already stored in this repository.
+      # This is deliberately done BEFORE trusting any external
+      # GTA9 kernel source tree.
+      # ============================================================
+      - name: Audit stock AP kernel artifacts
+        run: |
+          set -euo pipefail
+
+          echo "=================================================="
+          echo "STOCK AP BINARY FORENSICS"
+          echo "=================================================="
+
+          sudo apt-get update
+          sudo apt-get install -y lz4 file xz-utils python3 python3-pip
+
+          mkdir -p stock_audit
+          : > stock_audit/STOCK_KERNEL_FORENSICS.txt
+
+          {
+            echo "=========================================="
+            echo "GTA9 STOCK AP KERNEL FORENSICS"
+            echo "=========================================="
+            echo
+            echo "Repository: $GITHUB_REPOSITORY"
+            echo "Commit: $GITHUB_SHA"
+            echo
+            echo "===== AP FILES PRESENT IN REPOSITORY ====="
+            find . -maxdepth 1 -type f -printf "%f %s bytes\\n" | sort
+            echo
+          } | tee stock_audit/STOCK_KERNEL_FORENSICS.txt
+
+          echo "===== DECOMPRESS LZ4 AP IMAGES =====" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+
+          for f in *.img.lz4; do
+            [ -f "$f" ] || continue
+            out="${f%.lz4}"
+            echo "[LZ4] $f -> $out" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+            lz4 -f -d "$f" "$out"
+            file "$out" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+          done
+
+          echo | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+          echo "===== EXTRACT ANDROID BOOT TOOLS =====" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+
+          git clone --depth=1 https://android.googlesource.com/platform/system/tools/mkbootimg android_mkbootimg
+          chmod +x android_mkbootimg/unpack_bootimg.py
+
+          echo | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+          echo "===== BOOT.IMG HEADER / PAYLOAD =====" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+
+          if [ -f boot.img ]; then
+            mkdir -p stock_audit/boot
+            python3 android_mkbootimg/unpack_bootimg.py               --boot_img boot.img               --out stock_audit/boot               2>&1 | tee stock_audit/boot_unpack.log || true
+
+            find stock_audit/boot -maxdepth 2 -type f -printf "%p %s bytes\\n"               | sort | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+
+            if [ -f stock_audit/boot/kernel ]; then
+              echo | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+              echo "===== STOCK KERNEL FILE =====" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+              file stock_audit/boot/kernel | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+
+              echo | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+              echo "===== STOCK KERNEL STRINGS =====" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+
+              strings -a stock_audit/boot/kernel                 | grep -Ei                   'Linux version|5\\.10\\.205|android|clang|gcc|SMP|PREEMPT|gta9|gta9wifi|mt8781|Samsung|Exynos|KERNEL'                 | head -n 500                 | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt                 || true
+
+              echo | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+              echo "===== KERNEL VERSION CANDIDATES =====" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+
+              strings -a stock_audit/boot/kernel                 | grep -Eo 'Linux version [^[:cntrl:]]+'                 | head -n 20                 | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt                 || true
+
+              sha256sum stock_audit/boot/kernel                 | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+            else
+              echo "ERROR: unpack_bootimg did not produce stock_audit/boot/kernel"                 | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+            fi
+          else
+            echo "ERROR: boot.img is missing after LZ4 extraction"               | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+          fi
+
+          echo | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+          echo "===== VENDOR_BOOT.IMG HEADER / PAYLOAD =====" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+
+          if [ -f vendor_boot.img ]; then
+            mkdir -p stock_audit/vendor_boot
+            python3 android_mkbootimg/unpack_bootimg.py               --boot_img vendor_boot.img               --out stock_audit/vendor_boot               2>&1 | tee stock_audit/vendor_boot_unpack.log || true
+
+            find stock_audit/vendor_boot -maxdepth 2 -type f               -printf "%p %s bytes\\n"               | sort | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+          else
+            echo "vendor_boot.img missing after LZ4 extraction"               | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+          fi
+
+          echo | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+          echo "===== DTBO IMAGE =====" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+
+          if [ -f dtbo.img ]; then
+            file dtbo.img | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+            sha256sum dtbo.img | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+            strings -a dtbo.img               | grep -Ei 'gta9|gta9wifi|mt8781|mediatek|model|compatible'               | head -n 300               | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt               || true
+          fi
+
+          echo | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+          echo "===== VBMETA IMAGES =====" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+
+          for f in vbmeta.img vbmeta_system.img; do
+            if [ -f "$f" ]; then
+              echo "--- $f ---" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+              file "$f" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+              sha256sum "$f" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+              strings -a "$f"                 | grep -Ei 'avb|rollback|descriptor|hashtree|hash'                 | head -n 100                 | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt                 || true
+            fi
+          done
+
+          echo | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+          echo "===== FORENSICS COMPLETE =====" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+
+          cat stock_audit/STOCK_KERNEL_FORENSICS.txt
+
+      - name: Upload stock kernel forensics
+        uses: actions/upload-artifact@v4
+        with:
+          name: GTA9-stock-kernel-forensics
+          path: |
+            stock_audit/STOCK_KERNEL_FORENSICS.txt
+            stock_audit/boot_unpack.log
+            stock_audit/vendor_boot_unpack.log
+
 
       # ============================================================
       # 1. PREPARE HOST
