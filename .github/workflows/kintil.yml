@@ -297,57 +297,57 @@ jobs:
           mkdir -p forensic
 
           python3 - "$STOCK_DTB" <<'PY' | tee forensic/STOCK_DTB_LAYOUT.txt
-import sys, struct
-p = sys.argv[1]
-b = open(p, "rb").read()
-magic = b"\xd0\x0d\xfe\xed"
-hits = []
-i = 0
-while True:
-    i = b.find(magic, i)
-    if i < 0:
-        break
-    if i + 8 <= len(b):
-        size = struct.unpack(">I", b[i+4:i+8])[0]
-        if 40 <= size <= len(b) - i:
-            hits.append((i, size))
-    i += 4
-print("container_size:", len(b))
-print("valid_fdt_blobs:", len(hits))
-for n, (off, size) in enumerate(hits):
-    print(f"{n}: offset={off} size={size}")
-PY
+          import sys, struct
+          p = sys.argv[1]
+          b = open(p, "rb").read()
+          magic = b"\xd0\x0d\xfe\xed"
+          hits = []
+          i = 0
+          while True:
+              i = b.find(magic, i)
+              if i < 0:
+                  break
+              if i + 8 <= len(b):
+                  size = struct.unpack(">I", b[i+4:i+8])[0]
+                  if 40 <= size <= len(b) - i:
+                      hits.append((i, size))
+              i += 4
+          print("container_size:", len(b))
+          print("valid_fdt_blobs:", len(hits))
+          for n, (off, size) in enumerate(hits):
+              print(f"{n}: offset={off} size={size}")
+          PY
 
           python3 - "$STOCK_DTB" <<'PY' | tee forensic/STOCK_DTB_MATCHES.txt
-import sys, struct, subprocess, tempfile, os
-p = sys.argv[1]
-b = open(p, "rb").read()
-magic = b"\xd0\x0d\xfe\xed"
-n = 0
-i = 0
-while True:
-    i = b.find(magic, i)
-    if i < 0:
-        break
-    if i + 8 <= len(b):
-        size = struct.unpack(">I", b[i+4:i+8])[0]
-        if 40 <= size <= len(b) - i:
-            fn = f"/tmp/stock_{n}.dtb"
-            open(fn, "wb").write(b[i:i+size])
-            r = subprocess.run(["dtc", "-I", "dtb", "-O", "dts", fn],
-                               capture_output=True, text=True)
-            if r.returncode == 0:
-                hits = []
-                for line in r.stdout.splitlines():
-                    low = line.lower()
-                    if ("compatible =" in line or "model =" in line) and                        any(x in low for x in ("gta9", "mt8781", "samsung")):
-                        hits.append(line.strip())
-                if hits:
-                    print(f"blob={n} offset={i} size={size}")
-                    print("\n".join(hits[:40]))
-            n += 1
-    i += 4
-PY
+          import sys, struct, subprocess, tempfile, os
+          p = sys.argv[1]
+          b = open(p, "rb").read()
+          magic = b"\xd0\x0d\xfe\xed"
+          n = 0
+          i = 0
+          while True:
+              i = b.find(magic, i)
+              if i < 0:
+                  break
+              if i + 8 <= len(b):
+                  size = struct.unpack(">I", b[i+4:i+8])[0]
+                  if 40 <= size <= len(b) - i:
+                      fn = f"/tmp/stock_{n}.dtb"
+                      open(fn, "wb").write(b[i:i+size])
+                      r = subprocess.run(["dtc", "-I", "dtb", "-O", "dts", fn],
+                                         capture_output=True, text=True)
+                      if r.returncode == 0:
+                          hits = []
+                          for line in r.stdout.splitlines():
+                              low = line.lower()
+                              if ("compatible =" in line or "model =" in line) and                        any(x in low for x in ("gta9", "mt8781", "samsung")):
+                                  hits.append(line.strip())
+                          if hits:
+                              print(f"blob={n} offset={i} size={size}")
+                              print("\n".join(hits[:40]))
+                      n += 1
+              i += 4
+          PY
 
       - name: Write final validation report
         shell: bash
@@ -356,42 +356,42 @@ PY
           SOURCE_COMMIT="$(git -C kernel_samsung_gta9 rev-parse HEAD)"
 
           cat > VALIDATION_14_RESULT.txt <<EOF
-GTA9 14.0 STOCK VALIDATION
-==========================
-Source repo : $GTA9_REPO
-Branch      : $GTA9_BRANCH
-Commit      : $SOURCE_COMMIT
-Kernel      : 5.10.205
-Target      : Samsung Galaxy Tab A9 GTA9 / MT8781
+          GTA9 14.0 STOCK VALIDATION
+          ==========================
+          Source repo : $GTA9_REPO
+          Branch      : $GTA9_BRANCH
+          Commit      : $SOURCE_COMMIT
+          Kernel      : 5.10.205
+          Target      : Samsung Galaxy Tab A9 GTA9 / MT8781
 
-PASS CHECKS
------------
-Source kernelversion                : PASS
-GTA9 defconfig identity             : PASS
-GTA9 WiFi DTS identity              : PASS
-Source-native config generation     : PASS
-Required DTB overlay config         : PASS
-Stock config accepted by source     : PASS
-Source-native Image.gz build        : PASS
-GTA9 base DTB build                 : PASS
-GTA9 WiFi DTB build                 : PASS
-Stock kernel/DTB forensic inspection : PASS
+          PASS CHECKS
+          -----------
+          Source kernelversion                : PASS
+          GTA9 defconfig identity             : PASS
+          GTA9 WiFi DTS identity              : PASS
+          Source-native config generation     : PASS
+          Required DTB overlay config         : PASS
+          Stock config accepted by source     : PASS
+          Source-native Image.gz build        : PASS
+          GTA9 base DTB build                 : PASS
+          GTA9 WiFi DTB build                 : PASS
+          Stock kernel/DTB forensic inspection : PASS
 
-INTERPRETATION
---------------
-This validates source identity, configuration compatibility, buildability,
-and DTB/device identity against the supplied stock reference artifact.
-It does NOT claim binary equality between a fresh rebuild and Samsung stock.
-It does NOT modify kernel functionality or add ReSukiSU/KernelSU.
+          INTERPRETATION
+          --------------
+          This validates source identity, configuration compatibility, buildability,
+          and DTB/device identity against the supplied stock reference artifact.
+          It does NOT claim binary equality between a fresh rebuild and Samsung stock.
+          It does NOT modify kernel functionality or add ReSukiSU/KernelSU.
 
-Evidence:
-- STOCK_REFERENCE.txt
-- SOURCE_14_LOCK.txt
-- CONFIG_STOCK_VS_SOURCE.diff
-- CONFIG_STOCK_ACCEPTED_BY_SOURCE.config
-- CONFIG_STOCK_NORMALIZATION.diff
-- forensic/
-EOF
+          Evidence:
+          - STOCK_REFERENCE.txt
+          - SOURCE_14_LOCK.txt
+          - CONFIG_STOCK_VS_SOURCE.diff
+          - CONFIG_STOCK_ACCEPTED_BY_SOURCE.config
+          - CONFIG_STOCK_NORMALIZATION.diff
+          - forensic/
+          EOF
 
           cat VALIDATION_14_RESULT.txt
 
