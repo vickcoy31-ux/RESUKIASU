@@ -1,4 +1,4 @@
-name: GTA9 ReSukiSU V2 - Stage 1 Source Audit
+name: RESUKISU V2 - Stock 5.10.205 Deep Compare
 
 on:
   workflow_dispatch:
@@ -10,610 +10,220 @@ env:
   ARCH: arm64
   GTA9_REPO: https://github.com/prabhatkrmishra/kernel_samsung_gta9.git
   GTA9_BRANCH: 15.0
+  STOCK_KERNEL_TARGET: 5.10.205
 
 jobs:
-  source-audit:
+  deep-compare:
     runs-on: ubuntu-latest
 
-
     steps:
+      - name: Checkout RESUKISU V2
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      # ============================================================
-      # 0. STOCK AP BINARY FORENSICS
-      # Uses the AP files already stored in this repository.
-      # This is deliberately done BEFORE trusting any external
-      # GTA9 kernel source tree.
-      # ============================================================
-      - name: Audit stock AP kernel artifacts
+      - name: Prepare host
         run: |
           set -euo pipefail
-
-          echo "=================================================="
-          echo "STOCK AP BINARY FORENSICS"
-          echo "=================================================="
-
           sudo apt-get update
-          sudo apt-get install -y lz4 file xz-utils python3 python3-pip
+          sudo apt-get install -y             lz4 file xz-utils python3             git bc bison flex build-essential             clang lld llvm gcc-aarch64-linux-gnu             device-tree-compiler
 
-          mkdir -p stock_audit
-          : > stock_audit/STOCK_KERNEL_FORENSICS.txt
+      - name: Clone GTA9 source with submodules
+        run: |
+          set -euo pipefail
+          git clone             --branch "$GTA9_BRANCH"             --single-branch             --recurse-submodules             "$GTA9_REPO"             kernel_samsung_gta9
 
-          {
-            echo "=========================================="
-            echo "GTA9 STOCK AP KERNEL FORENSICS"
-            echo "=========================================="
-            echo
-            echo "Repository: $GITHUB_REPOSITORY"
-            echo "Commit: $GITHUB_SHA"
-            echo
-            echo "===== AP FILES PRESENT IN REPOSITORY ====="
-            find . -maxdepth 1 -type f -printf "%f %s bytes\\n" | sort
-            echo
-          } | tee stock_audit/STOCK_KERNEL_FORENSICS.txt
+          cd kernel_samsung_gta9
 
-          echo "===== DECOMPRESS LZ4 AP IMAGES =====" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+          echo "===== SOURCE LOCK =====" | tee ../GTA9_SOURCE_LOCK.txt
+          echo "Repository: $GTA9_REPO" | tee -a ../GTA9_SOURCE_LOCK.txt
+          echo "Requested branch: $GTA9_BRANCH" | tee -a ../GTA9_SOURCE_LOCK.txt
+          echo "Actual branch: $(git branch --show-current)" | tee -a ../GTA9_SOURCE_LOCK.txt
+          echo "Commit: $(git rev-parse HEAD)" | tee -a ../GTA9_SOURCE_LOCK.txt
+          echo "Kernel version: $(make -s kernelversion)" | tee -a ../GTA9_SOURCE_LOCK.txt
+          echo | tee -a ../GTA9_SOURCE_LOCK.txt
+          echo "===== SUBMODULES =====" | tee -a ../GTA9_SOURCE_LOCK.txt
+          git submodule status --recursive | tee -a ../GTA9_SOURCE_LOCK.txt
+          echo | tee -a ../GTA9_SOURCE_LOCK.txt
+          echo "===== GITMODULES =====" | tee -a ../GTA9_SOURCE_LOCK.txt
+          if [ -f .gitmodules ]; then
+            cat .gitmodules | tee -a ../GTA9_SOURCE_LOCK.txt
+          else
+            echo "NO .gitmodules" | tee -a ../GTA9_SOURCE_LOCK.txt
+          fi
 
+      - name: Extract stock AP images
+        run: |
+          set -euo pipefail
+          mkdir -p stock_audit/boot stock_audit/vendor_boot
+          : > stock_audit/STOCK_5.10.205_FORENSICS.txt
+
+          echo "==========================================" | tee stock_audit/STOCK_5.10.205_FORENSICS.txt
+          echo "RESUKISU V2 STOCK FORENSICS" | tee -a stock_audit/STOCK_5.10.205_FORENSICS.txt
+          echo "TARGET: Samsung Galaxy Tab A9 X110" | tee -a stock_audit/STOCK_5.10.205_FORENSICS.txt
+          echo "STOCK KERNEL BASELINE: $STOCK_KERNEL_TARGET" | tee -a stock_audit/STOCK_5.10.205_FORENSICS.txt
+          echo "==========================================" | tee -a stock_audit/STOCK_5.10.205_FORENSICS.txt
+
+          echo | tee -a stock_audit/STOCK_5.10.205_FORENSICS.txt
+          echo "===== AP FILES =====" | tee -a stock_audit/STOCK_5.10.205_FORENSICS.txt
+          find . -maxdepth 1 -type f -printf '%f %s bytes\n' | sort | tee -a stock_audit/STOCK_5.10.205_FORENSICS.txt
+
+          echo | tee -a stock_audit/STOCK_5.10.205_FORENSICS.txt
+          echo "===== DECOMPRESS LZ4 =====" | tee -a stock_audit/STOCK_5.10.205_FORENSICS.txt
           for f in *.img.lz4; do
             [ -f "$f" ] || continue
             out="${f%.lz4}"
-            echo "[LZ4] $f -> $out" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
             lz4 -f -d "$f" "$out"
-            file "$out" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+            file "$out" | tee -a stock_audit/STOCK_5.10.205_FORENSICS.txt
           done
 
-          echo | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
-          echo "===== EXTRACT ANDROID BOOT TOOLS =====" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+      - name: Unpack stock boot and vendor_boot
+        run: |
+          set -euo pipefail
 
           git clone --depth=1 https://android.googlesource.com/platform/system/tools/mkbootimg android_mkbootimg
           chmod +x android_mkbootimg/unpack_bootimg.py
 
-          echo | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
-          echo "===== BOOT.IMG HEADER / PAYLOAD =====" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
-
           if [ -f boot.img ]; then
-            mkdir -p stock_audit/boot
             python3 android_mkbootimg/unpack_bootimg.py               --boot_img boot.img               --out stock_audit/boot               2>&1 | tee stock_audit/boot_unpack.log || true
-
-            find stock_audit/boot -maxdepth 2 -type f -printf "%p %s bytes\\n"               | sort | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
-
-            if [ -f stock_audit/boot/kernel ]; then
-              echo | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
-              echo "===== STOCK KERNEL FILE =====" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
-              file stock_audit/boot/kernel | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
-
-              echo | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
-              echo "===== STOCK KERNEL STRINGS =====" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
-
-              strings -a stock_audit/boot/kernel                 | grep -Ei                   'Linux version|5\\.10\\.205|android|clang|gcc|SMP|PREEMPT|gta9|gta9wifi|mt8781|Samsung|Exynos|KERNEL'                 | head -n 500                 | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt                 || true
-
-              echo | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
-              echo "===== KERNEL VERSION CANDIDATES =====" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
-
-              strings -a stock_audit/boot/kernel                 | grep -Eo 'Linux version [^[:cntrl:]]+'                 | head -n 20                 | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt                 || true
-
-              sha256sum stock_audit/boot/kernel                 | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
-            else
-              echo "ERROR: unpack_bootimg did not produce stock_audit/boot/kernel"                 | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
-            fi
-          else
-            echo "ERROR: boot.img is missing after LZ4 extraction"               | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
           fi
-
-          echo | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
-          echo "===== VENDOR_BOOT.IMG HEADER / PAYLOAD =====" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
 
           if [ -f vendor_boot.img ]; then
-            mkdir -p stock_audit/vendor_boot
             python3 android_mkbootimg/unpack_bootimg.py               --boot_img vendor_boot.img               --out stock_audit/vendor_boot               2>&1 | tee stock_audit/vendor_boot_unpack.log || true
-
-            find stock_audit/vendor_boot -maxdepth 2 -type f               -printf "%p %s bytes\\n"               | sort | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
-          else
-            echo "vendor_boot.img missing after LZ4 extraction"               | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
           fi
 
-          echo | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
-          echo "===== DTBO IMAGE =====" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+          echo "===== BOOT CONTENTS =====" | tee -a stock_audit/STOCK_5.10.205_FORENSICS.txt
+          find stock_audit/boot -maxdepth 3 -type f -printf '%p %s bytes\n' | sort             | tee -a stock_audit/STOCK_5.10.205_FORENSICS.txt
 
-          if [ -f dtbo.img ]; then
-            file dtbo.img | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
-            sha256sum dtbo.img | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
-            strings -a dtbo.img               | grep -Ei 'gta9|gta9wifi|mt8781|mediatek|model|compatible'               | head -n 300               | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt               || true
+          echo | tee -a stock_audit/STOCK_5.10.205_FORENSICS.txt
+          echo "===== VENDOR_BOOT CONTENTS =====" | tee -a stock_audit/STOCK_5.10.205_FORENSICS.txt
+          find stock_audit/vendor_boot -maxdepth 3 -type f -printf '%p %s bytes\n' | sort             | tee -a stock_audit/STOCK_5.10.205_FORENSICS.txt
+
+      - name: Extract stock kernel config and metadata
+        run: |
+          set -euo pipefail
+
+          REPORT=stock_audit/STOCK_5.10.205_CONFIG.txt
+          : > "$REPORT"
+
+          echo "==========================================" | tee "$REPORT"
+          echo "STOCK KERNEL CONFIG / METADATA" | tee -a "$REPORT"
+          echo "==========================================" | tee -a "$REPORT"
+
+          KERNEL="stock_audit/boot/kernel"
+
+          if [ ! -f "$KERNEL" ]; then
+            echo "ERROR: stock kernel was not extracted" | tee -a "$REPORT"
+            exit 1
           fi
 
-          echo | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
-          echo "===== VBMETA IMAGES =====" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+          echo | tee -a "$REPORT"
+          echo "===== FILE =====" | tee -a "$REPORT"
+          file "$KERNEL" | tee -a "$REPORT"
+          sha256sum "$KERNEL" | tee -a "$REPORT"
 
-          for f in vbmeta.img vbmeta_system.img; do
-            if [ -f "$f" ]; then
-              echo "--- $f ---" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
-              file "$f" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
-              sha256sum "$f" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
-              strings -a "$f"                 | grep -Ei 'avb|rollback|descriptor|hashtree|hash'                 | head -n 100                 | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt                 || true
+          echo | tee -a "$REPORT"
+          echo "===== LINUX VERSION =====" | tee -a "$REPORT"
+          strings -a "$KERNEL"             | grep -E 'Linux version [^[:cntrl:]]+'             | head -n 20             | tee -a "$REPORT" || true
+
+          echo | tee -a "$REPORT"
+          echo "===== STOCK 5.10.205 / DEVICE STRINGS =====" | tee -a "$REPORT"
+          strings -a "$KERNEL"             | grep -Ei '5\.10\.205|android12|mt8781|gta9|gta9wifi|Samsung|clang|gcc|LLVM|PREEMPT|SMP'             | head -n 500             | tee -a "$REPORT" || true
+
+          echo | tee -a "$REPORT"
+          echo "===== EMBEDDED CONFIG: scripts/extract-ikconfig =====" | tee -a "$REPORT"
+
+          if [ -x kernel_samsung_gta9/scripts/extract-ikconfig ]; then
+            if kernel_samsung_gta9/scripts/extract-ikconfig "$KERNEL" > stock_audit/stock.config 2>stock_audit/extract_ikconfig.err; then
+              echo "STATUS: CONFIG EXTRACTED" | tee -a "$REPORT"
+              wc -l stock_audit/stock.config | tee -a "$REPORT"
+              sha256sum stock_audit/stock.config | tee -a "$REPORT"
+              cp stock_audit/stock.config "$REPORT.config"
+            else
+              echo "STATUS: NO EMBEDDED CONFIG FOUND" | tee -a "$REPORT"
+              cat stock_audit/extract_ikconfig.err | tee -a "$REPORT" || true
             fi
-          done
+          else
+            echo "STATUS: extract-ikconfig unavailable" | tee -a "$REPORT"
+          fi
 
-          echo | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
-          echo "===== FORENSICS COMPLETE =====" | tee -a stock_audit/STOCK_KERNEL_FORENSICS.txt
+          echo | tee -a "$REPORT"
+          echo "===== BOOT HEADER METADATA =====" | tee -a "$REPORT"
+          find stock_audit/boot -maxdepth 1 -type f -printf '%f\n' | sort | tee -a "$REPORT"
 
-          cat stock_audit/STOCK_KERNEL_FORENSICS.txt
-
-      - name: Upload stock kernel forensics
-        uses: actions/upload-artifact@v4
-        with:
-          name: GTA9-stock-kernel-forensics
-          path: |
-            stock_audit/STOCK_KERNEL_FORENSICS.txt
-            stock_audit/boot_unpack.log
-            stock_audit/vendor_boot_unpack.log
-
-
-      # ============================================================
-      # 1. PREPARE HOST
-      # ============================================================
-      - name: Prepare host
+      - name: Audit GTA9 build and defconfig
         run: |
           set -euo pipefail
-
-          sudo apt-get update
-
-          sudo apt-get install -y \
-            git \
-            bc \
-            bison \
-            flex \
-            build-essential \
-            clang \
-            lld \
-            llvm \
-            gcc-aarch64-linux-gnu \
-            device-tree-compiler
-
-      # ============================================================
-      # 2. CLONE GTA9 SOURCE
-      # ============================================================
-      - name: Clone GTA9 kernel source
-        run: |
-          set -euo pipefail
-
-          echo "=================================================="
-          echo "CLONE GTA9 KERNEL"
-          echo "=================================================="
-
-          git clone \
-            --branch 15.0 \
-            --single-branch \
-            https://github.com/prabhatkrmishra/kernel_samsung_gta9.git \
-            kernel_samsung_gta9
-
           cd kernel_samsung_gta9
 
-          echo
-          echo "===== COMMIT ====="
-          git rev-parse HEAD
+          {
+            echo "=========================================="
+            echo "GTA9 15.0 BUILD / DEFCONFIG AUDIT"
+            echo "=========================================="
+            echo
+            echo "===== KERNEL VERSION ====="
+            make -s kernelversion
+            echo
+            echo "===== VERSION MAKEFILE ====="
+            grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)[[:space:]]*=' Makefile || true
+            echo
+            echo "===== BUILD CONFIG FILES ====="
+            find . -maxdepth 4 -type f \( -name 'build.config*' -o -name '*.build.config' \) -print | sort
+            echo
+            echo "===== build.config.aarch64 ====="
+            if [ -f build.config.aarch64 ]; then cat build.config.aarch64; fi
+            echo
+            echo "===== build.config.mtk.aarch64 ====="
+            if [ -f build.config.mtk.aarch64 ]; then cat build.config.mtk.aarch64; fi
+            echo
+            echo "===== custom_kernel.sh ====="
+            if [ -f custom_kernel.sh ]; then cat custom_kernel.sh; fi
+            echo
+            echo "===== GTA9 DEFCONFIG ====="
+            if [ -f arch/arm64/configs/gta9_defconfig ]; then cat arch/arm64/configs/gta9_defconfig; fi
+            echo
+            echo "===== GTA9_00 DEFCONFIG ====="
+            if [ -f arch/arm64/configs/gta9_00_defconfig ]; then cat arch/arm64/configs/gta9_00_defconfig; fi
+          } > ../GTA9_BUILD_DEFCONFIG.txt
 
-          echo
-          echo "===== BRANCH ====="
-          git branch --show-current
-
-          echo
-          echo "===== REMOTE ====="
-          git remote -v
-
-      # ============================================================
-      # 3. KERNEL VERSION AUDIT
-      # ============================================================
-      - name: Kernel version audit
+      - name: Generate normalized config comparison
         run: |
           set -euo pipefail
+          mkdir -p compare
 
-          cd kernel_samsung_gta9
+          STOCK="stock_audit/stock.config"
+          GTA9="kernel_samsung_gta9/arch/arm64/configs/gta9_defconfig"
 
-          echo "=================================================="
-          echo "KERNEL VERSION AUDIT"
-          echo "=================================================="
+          {
+            echo "=========================================="
+            echo "STOCK 5.10.205 vs GTA9 5.10.218"
+            echo "CONFIG COMPARISON"
+            echo "=========================================="
+            echo
 
-          echo
-          echo "===== MAKEFILE VERSION ====="
-
-          grep -E \
-            '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)[[:space:]]*=' \
-            Makefile || true
-
-          echo
-          echo "===== KERNELVERSION ====="
-
-          make -s kernelversion || true
-
-      # ============================================================
-      # 4. EXACT KERNEL + GKI AUDIT
-      # ============================================================
-      - name: Exact kernel and GKI audit
-        run: |
-          set -euo pipefail
-
-          cd kernel_samsung_gta9
-
-          echo "=================================================="
-          echo "EXACT KERNEL + GKI AUDIT"
-          echo "=================================================="
-
-          echo
-          echo "===== EXACT KERNEL VERSION ====="
-
-          make -s kernelversion || true
-
-          echo
-          echo "===== MAKEFILE VERSION ====="
-
-          grep -E \
-            '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)[[:space:]]*=' \
-            Makefile || true
-
-          echo
-          echo "===== ARM64 CONFIG TARGETS ====="
-
-          find arch/arm64/configs \
-            -maxdepth 1 \
-            -type f \
-            \( \
-              -name '*gki*' \
-              -o -name '*gta9*' \
-            \) \
-            -print \
-            | sort
-
-          echo
-          echo "===== BUILD CONFIG FILES ====="
-
-          find . \
-            -type f \
-            \( \
-              -name 'build.config' \
-              -o -name 'build.config.*' \
-              -o -name '*.build.config' \
-            \) \
-            -print \
-            | sort
-
-          echo
-          echo "===== GKI REFERENCES ====="
-
-          grep -RIn \
-            -E \
-            'gki_defconfig|GKI|KMI|TRIM_NONLISTED_KMI|KMI_SYMBOL_LIST|ABI' \
-            . \
-            --exclude-dir=.git \
-            2>/dev/null \
-            | head -n 300 || true
-
-          echo
-          echo "===== GTA9 DEFCONFIG ====="
-
-          if [ -f arch/arm64/configs/gta9_defconfig ]; then
-            echo "FOUND: arch/arm64/configs/gta9_defconfig"
+            if [ -f "$STOCK" ]; then
+              echo "===== STOCK CONFIG SUMMARY ====="
+              grep -E '^CONFIG_(ARCH|ANDROID|GKI|KSU|KNOX|SEC_|SECURITY|SELINUX|LTO|CC_|LD_|MODULES|MTK|MT8781)' "$STOCK"                 | sort || true
+            else
+              echo "STOCK CONFIG: unavailable from embedded kernel"
+            fi
 
             echo
-            echo "===== CONFIG_KSU / MODULES / LTO / CLANG ====="
-
-            grep -nE \
-              'CONFIG_KSU|CONFIG_MODULES|CONFIG_LTO|CONFIG_LTO_CLANG|CONFIG_CC_IS_CLANG' \
-              arch/arm64/configs/gta9_defconfig \
-              || true
-          else
-            echo "NOT FOUND: arch/arm64/configs/gta9_defconfig"
-          fi
-
-      # ============================================================
-      # 5. DEFCONFIG AUDIT
-      # ============================================================
-      - name: Defconfig audit
-        run: |
-          set -euo pipefail
-
-          cd kernel_samsung_gta9
-
-          echo "=================================================="
-          echo "DEFCONFIG AUDIT"
-          echo "=================================================="
-
-          echo
-          echo "===== DEFCONFIG FILES ====="
-
-          find arch/arm64/configs \
-            -maxdepth 1 \
-            -type f \
-            -printf '%f\n' \
-            | sort
-
-          echo
-          echo "===== GTA9 DEFCONFIG ====="
-
-          if [ -f arch/arm64/configs/gta9_defconfig ]; then
-
-            echo "===== SECURITY / KSU / BUILD CONFIG ====="
-
-            grep -E \
-              '^(CONFIG_KSU|CONFIG_KNOX|CONFIG_SECURITY_DEFEX|CONFIG_SECURITY_PROCA|CONFIG_SECURITY_SELINUX|CONFIG_LTO|CONFIG_MODULES)' \
-              arch/arm64/configs/gta9_defconfig \
-              2>/dev/null \
-              || true
-
-          else
-
-            echo "gta9_defconfig NOT FOUND"
-
-          fi
-
-      # ============================================================
-      # 6. BUILD CONFIG + GKI AUDIT
-      # ============================================================
-      - name: Build config and GKI audit
-        run: |
-          set -euo pipefail
-
-          cd kernel_samsung_gta9
-
-          echo "=================================================="
-          echo "BUILD CONFIG + GKI AUDIT"
-          echo "=================================================="
-
-          echo
-          echo "===== BUILD CONFIG FILES ====="
-
-          find . \
-            -maxdepth 4 \
-            -type f \
-            \( \
-              -name 'build.config*' \
-              -o -name '*.build.config' \
-            \) \
-            -print \
-            | sort
-
-          echo
-          echo "===== GKI REFERENCES ====="
-
-          grep -RIn \
-            -E \
-            'gki_defconfig|GKI|KMI|ABI|TRIM_NONLISTED_KMI' \
-            build.config* \
-            . \
-            --exclude-dir=.git \
-            2>/dev/null \
-            | head -n 300 \
-            || true
-
-      # ============================================================
-      # 7. SAMSUNG SECURITY AUDIT
-      # ============================================================
-      - name: Samsung security audit
-        run: |
-          set -euo pipefail
-
-          cd kernel_samsung_gta9
-
-          echo "=================================================="
-          echo "SAMSUNG SECURITY AUDIT"
-          echo "=================================================="
-
-          echo
-          echo "===== DEFEX ====="
-
-          grep -RIn \
-            -E \
-            'CONFIG_SECURITY_DEFEX|task_defex_enforce|defex_lsm' \
-            . \
-            --exclude-dir=.git \
-            2>/dev/null \
-            | head -n 150 \
-            || true
-
-          echo
-          echo "===== KNOX_NCM ====="
-
-          grep -RIn \
-            -E \
-            'CONFIG_KNOX_NCM|KNOX_NCM' \
-            arch/arm64/configs \
-            drivers \
-            net \
-            security \
-            2>/dev/null \
-            | head -n 150 \
-            || true
-
-          echo
-          echo "===== PROCA / KDP ====="
-
-          grep -RIn \
-            -E \
-            'CONFIG_PROCA|CONFIG_KDP|PROCA|KDP' \
-            arch/arm64/configs \
-            security \
-            2>/dev/null \
-            | head -n 200 \
-            || true
-
-          echo
-          echo "===== LEGACY SECURITY SYMBOLS ====="
-
-          grep -RIn \
-            -E \
-            'CONFIG_SEC_RESTRICT_FORK|CONFIG_SEC_RESTRICT_ROOTMOD|CONFIG_KNOX_KAP|CONFIG_RKP' \
-            . \
-            --exclude-dir=.git \
-            2>/dev/null \
-            | head -n 100 \
-            || true
-
-      # ============================================================
-      # 8. GTA9 DTB / DTBO AUDIT
-      # ============================================================
-      - name: GTA9 DTB DTBO audit
-        run: |
-          set -euo pipefail
-
-          cd kernel_samsung_gta9
-
-          echo "=================================================="
-          echo "GTA9 DTB / DTBO AUDIT"
-          echo "=================================================="
-
-          echo
-          echo "===== GTA9 DTS / DTB FILES ====="
-
-          find arch/arm64/boot/dts \
-            -type f \
-            \( \
-              -name '*gta9*' \
-              -o -name '*mt8781*' \
-              -o -name '*mt6789*' \
-            \) \
-            -print \
-            | sort
-
-          echo
-          echo "===== DTBO CONFIG ====="
-
-          grep -RIn \
-            -E \
-            'BUILD_ARM64_DTB_OVERLAY_IMAGE_NAMES|mt8781_gta9_eur_open_00' \
-            arch/arm64/configs \
-            2>/dev/null \
-            | head -n 100 \
-            || true
-
-          echo
-          echo "===== PLUGIN DTS ====="
-
-          grep -RIn \
-            '/plugin/;' \
-            arch/arm64/boot/dts/mediatek \
-            2>/dev/null \
-            | head -n 100 \
-            || true
-
-      # ============================================================
-      # 9. KERNELSU / RESUKISU AUDIT
-      # ============================================================
-      - name: ReSukiSU KernelSU audit
-        run: |
-          set -euo pipefail
-
-          cd kernel_samsung_gta9
-
-          echo "=================================================="
-          echo "KERNELSU / RESUKISU AUDIT"
-          echo "=================================================="
-
-          echo
-          echo "===== DRIVERS/KERNELSU ====="
-
-          if [ -d drivers/kernelsu ]; then
-
-            echo "FOUND drivers/kernelsu"
-
-            find drivers/kernelsu \
-              -maxdepth 2 \
-              -type f \
-              -print \
-              | sort \
-              | head -n 200
-
-          else
-
-            echo "NOT FOUND"
-
-          fi
-
-          echo
-          echo "===== CONFIG_KSU ====="
-
-          grep -RIn \
-            -E \
-            'CONFIG_KSU|config KSU' \
-            arch/arm64/configs \
-            drivers \
-            2>/dev/null \
-            | head -n 100 \
-            || true
-
-          echo
-          echo "===== KSU MAKEFILE HOOK ====="
-
-          grep -RIn \
-            -E \
-            'kernelsu|CONFIG_KSU' \
-            drivers/Makefile \
-            drivers/Kconfig \
-            2>/dev/null \
-            || true
-
-          echo
-          echo "===== RESUKISU REFERENCES ====="
-
-          grep -RIn \
-            -i \
-            'resukisu' \
-            . \
-            --exclude-dir=.git \
-            2>/dev/null \
-            | head -n 200 \
-            || true
-
-      # ============================================================
-      # 10. MANUAL HOOK / KERNEL INTEGRATION AUDIT
-      # ============================================================
-      - name: Kernel hook audit
-        run: |
-          set -euo pipefail
-
-          cd kernel_samsung_gta9
-
-          echo "=================================================="
-          echo "KERNEL HOOK AUDIT"
-          echo "=================================================="
-
-          echo
-          echo "===== EXEC / CRED / FS HOOK CANDIDATES ====="
-
-          grep -RIn \
-            -E \
-            'execve|do_execve|prepare_binprm|install_exec_creds|commit_creds|override_creds|revert_creds' \
-            fs \
-            kernel \
-            2>/dev/null \
-            | head -n 250 \
-            || true
-
-          echo
-          echo "===== TASK / CREDENTIAL HOOK CANDIDATES ====="
-
-          grep -RIn \
-            -E \
-            'task_struct|cred|security_task|security_inode|security_file' \
-            kernel \
-            security \
-            fs \
-            2>/dev/null \
-            | head -n 250 \
-            || true
-
-          echo
-          echo "===== SELINUX HOOK REFERENCES ====="
-
-          grep -RIn \
-            -E \
-            'security_.*cred|security_.*inode|security_.*task' \
-            security/selinux \
-            2>/dev/null \
-            | head -n 200 \
-            || true
-
-      # ============================================================
-      # 11. SOURCE LOCK REPORT
-      # ============================================================
-      - name: Generate audit report
+            echo "===== GTA9 DEFCONFIG SUMMARY ====="
+            if [ -f "$GTA9" ]; then
+              grep -E '^CONFIG_(ARCH|ANDROID|GKI|KSU|KNOX|SEC_|SECURITY|SELINUX|LTO|CC_|LD_|MODULES|MTK|MT8781)' "$GTA9"                 | sort || true
+            fi
+
+            echo
+            echo "===== CONFIG DIFF ====="
+            if [ -f "$STOCK" ]; then
+              diff -u <(sed '/^#/d;/^[[:space:]]*$/d' "$STOCK" | sort)                       <(sed '/^#/d;/^[[:space:]]*$/d' "$GTA9" | sort) || true
+            else
+              echo "Cannot produce exact config diff: stock embedded config unavailable."
+            fi
+          } > compare/CONFIG_DIFF.txt
+
+      - name: Audit DTS DTBO and device identity
         run: |
           set -euo pipefail
 
@@ -621,78 +231,132 @@ jobs:
 
           {
             echo "=========================================="
-            echo "GTA9 ReSukiSU V2 SOURCE AUDIT"
+            echo "GTA9 DEVICE TREE AUDIT"
             echo "=========================================="
             echo
+            echo "===== GTA9 / MT8781 DTS FILES ====="
+            find arch/arm64/boot/dts               -type f               \( -name '*gta9*' -o -name '*mt8781*' \)               -print | sort
 
-            echo "Repository:"
-            echo "https://github.com/prabhatkrmishra/kernel_samsung_gta9.git"
             echo
+            echo "===== GTA9 MAKEFILE REFERENCES ====="
+            grep -RIn -E 'mt8781|gta9|BUILD_ARM64_DTB'               arch/arm64/boot/dts/mediatek/Makefile               arch/arm64/configs               2>/dev/null | head -n 300 || true
 
-            echo "Requested branch:"
-            echo "15.0"
             echo
+            echo "===== DEVICE COMPATIBLES ====="
+            grep -RIn -E 'compatible.*Samsung|compatible.*MT8781|model.*GTA9'               arch/arm64/boot/dts/mediatek               2>/dev/null | head -n 300 || true
+          } > ../GTA9_DTS_AUDIT.txt
 
-            echo "Actual branch:"
-            git branch --show-current
+          cd ..
+
+          {
+            echo "===== STOCK DTBO ====="
+            if [ -f dtbo.img ]; then
+              file dtbo.img
+              sha256sum dtbo.img
+              strings -a dtbo.img | grep -Ei 'gta9|gta9wifi|mt8781|mediatek|Samsung|compatible'                 | head -n 300 || true
+            else
+              echo "dtbo.img not present"
+            fi
+
             echo
+            echo "===== STOCK DEVICE STRINGS FROM KERNEL ====="
+            strings -a stock_audit/boot/kernel               | grep -Ei 'gta9|gta9wifi|mt8781|Samsung|X110'               | head -n 300 || true
+          } > compare/DEVICE_IDENTITY.txt
 
-            echo "Commit:"
-            git rev-parse HEAD
-            echo
+      - name: Audit KernelSU integration state
+        run: |
+          set -euo pipefail
+          cd kernel_samsung_gta9
 
-            echo "Kernel version:"
-            make -s kernelversion 2>/dev/null || true
-            echo
-
+          {
             echo "=========================================="
-            echo "STAGE STATUS"
+            echo "KERNELSU / RESUKISU STATE"
             echo "=========================================="
             echo
-
-            echo "Stage 1: SOURCE AUDIT"
-            echo "STATUS: RUN"
+            echo "===== SUBMODULE STATUS ====="
+            git submodule status --recursive || true
             echo
-
-            echo "Stage 2: ReSukiSU integration"
-            echo "STATUS: NOT STARTED"
+            echo "===== KERNELSU DIRECTORY ====="
+            if [ -d KernelSU ]; then
+              find KernelSU -maxdepth 2 -type f -print | sort | head -n 300
+            else
+              echo "KernelSU directory NOT FOUND"
+            fi
             echo
-
-            echo "Stage 3: Kernel build"
-            echo "STATUS: NOT STARTED"
+            echo "===== CONFIG_KSU ====="
+            grep -RIn -E 'CONFIG_KSU|config KSU'               arch/arm64/configs drivers               2>/dev/null | head -n 200 || true
             echo
+            echo "===== KSU HOOK REFERENCES ====="
+            grep -RIn -E 'kernelsu|CONFIG_KSU'               Makefile drivers Kconfig arch/arm64/configs               2>/dev/null | head -n 300 || true
+          } > ../KERNELSU_AUDIT.txt
 
-            echo "Stage 4: Preflight"
-            echo "STATUS: NOT STARTED"
-            echo
+      - name: Generate reconstruction plan
+        run: |
+          set -euo pipefail
 
-            echo "Stage 5: boot.img modification"
-            echo "STATUS: NOT STARTED"
-            echo
-
-            echo "Stage 6: Final validation"
-            echo "STATUS: NOT STARTED"
-            echo
-
+          {
             echo "=========================================="
-            echo "IMPORTANT"
+            echo "RESUKISU V2 RECONSTRUCTION PLAN"
             echo "=========================================="
+            echo
+            echo "PRIMARY BASELINE:"
+            echo "Samsung Galaxy Tab A9 X110 stock kernel 5.10.205"
+            echo
+            echo "SOURCE BASE:"
+            echo "GTA9 kernel source branch 15.0"
+            echo "GTA9 source kernel version: 5.10.218"
+            echo
+            echo "RULE:"
+            echo "Do NOT change 5.10.218 to 5.10.205 by string replacement."
+            echo "Use stock 5.10.205 artifacts as the reference for reconstruction."
+            echo
+            echo "REQUIRED NEXT WORK:"
+            echo "1. Resolve stock kernel config from embedded config or other firmware evidence."
+            echo "2. Compare stock config against gta9_defconfig."
+            echo "3. Compare build.config/custom_kernel.sh/toolchain assumptions."
+            echo "4. Resolve exact GTA9 KernelSU submodule commit."
+            echo "5. Reconcile GTA9 DTS/DTSI with stock DTB/DTBO identity."
+            echo "6. Only then create the RESUKISU V2 reconstructed source tree."
+            echo "7. Build only after the source reconstruction is locked."
+            echo
+            echo "STATUS:"
+            echo "Stock 5.10.205 forensic: DONE"
+            echo "GTA9 5.10.218 source audit: DONE"
+            echo "Deep comparison: GENERATED"
+            echo "Source modification: NOT STARTED"
+            echo "Kernel build: NOT STARTED"
+          } > RECONSTRUCTION_PLAN.txt
 
-            echo "No source modification."
-            echo "No ReSukiSU integration."
-            echo "No kernel build."
-            echo "No boot.img modification."
-            echo "No flashing."
+      - name: Validate generated reports
+        run: |
+          set -euo pipefail
 
-          } > ../GTA9_SOURCE_AUDIT.txt
+          test -s GTA9_SOURCE_LOCK.txt
+          test -s GTA9_BUILD_DEFCONFIG.txt
+          test -s GTA9_DTS_AUDIT.txt
+          test -s KERNELSU_AUDIT.txt
+          test -s compare/CONFIG_DIFF.txt
+          test -s compare/DEVICE_IDENTITY.txt
+          test -s RECONSTRUCTION_PLAN.txt
 
-          cat ../GTA9_SOURCE_AUDIT.txt
+          grep -q "STOCK 5.10.205 vs GTA9 5.10.218" compare/CONFIG_DIFF.txt
+          grep -q "PRIMARY BASELINE:" RECONSTRUCTION_PLAN.txt
+          grep -q "Do NOT change 5.10.218 to 5.10.205" RECONSTRUCTION_PLAN.txt
 
-      # ============================================================
-      # 12. UPLOAD AUDIT REPORT
-      # ============================================================
-      - name: Upload audit report
+          echo "=========================================="
+          echo "PRE-BUILD VALIDATION: PASS"
+          echo "=========================================="
+          echo "All expected reports exist and contain required markers."
+
+      - name: Upload deep comparison artifact
         uses: actions/upload-artifact@v4
         with:
-          name: GTA9-source-audit
-          path: GTA9_SOURCE_AUDIT.txt
+          name: RESUKISU-V2-stock-510205-deep-compare
+          path: |
+            stock_audit/
+            compare/
+            GTA9_SOURCE_LOCK.txt
+            GTA9_BUILD_DEFCONFIG.txt
+            GTA9_DTS_AUDIT.txt
+            KERNELSU_AUDIT.txt
+            RECONSTRUCTION_PLAN.txt
