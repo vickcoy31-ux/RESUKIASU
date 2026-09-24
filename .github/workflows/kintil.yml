@@ -56,13 +56,17 @@ jobs:
           set -euo pipefail
           find stock_reference -maxdepth 8 -type f -print | sort
 
-          STOCK_CONFIG="$(find stock_reference -type f -name stock.config -print -quit)"
-          STOCK_KERNEL="$(find stock_reference -type f -path '*/boot/kernel' -print -quit)"
-          STOCK_DTB="$(find stock_reference -type f -path '*/vendor_boot/dtb' -print -quit)"
+          STOCK_CONFIG_REL="$(find stock_reference -type f -name stock.config -print -quit)"
+          STOCK_KERNEL_REL="$(find stock_reference -type f -path '*/boot/kernel' -print -quit)"
+          STOCK_DTB_REL="$(find stock_reference -type f -path '*/vendor_boot/dtb' -print -quit)"
 
-          test -n "$STOCK_CONFIG" || { echo "ERROR: stock.config missing"; exit 1; }
-          test -n "$STOCK_KERNEL" || { echo "ERROR: boot/kernel missing"; exit 1; }
-          test -n "$STOCK_DTB" || { echo "ERROR: vendor_boot/dtb missing"; exit 1; }
+          test -n "$STOCK_CONFIG_REL" || { echo "ERROR: stock.config missing"; exit 1; }
+          test -n "$STOCK_KERNEL_REL" || { echo "ERROR: boot/kernel missing"; exit 1; }
+          test -n "$STOCK_DTB_REL" || { echo "ERROR: vendor_boot/dtb missing"; exit 1; }
+
+          STOCK_CONFIG="$(realpath "$STOCK_CONFIG_REL")"
+          STOCK_KERNEL="$(realpath "$STOCK_KERNEL_REL")"
+          STOCK_DTB="$(realpath "$STOCK_DTB_REL")"
 
           {
             echo "STOCK_CONFIG=$STOCK_CONFIG"
