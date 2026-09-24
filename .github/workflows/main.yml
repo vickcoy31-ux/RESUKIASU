@@ -1,0 +1,373 @@
+name: GTA9 ReSukiSU V2 - Stage 1 Source Audit
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ARCH: arm64
+  GTA9_REPO: https://github.com/prabhatkrmishra/kernel_samsung_gta9.git
+  GTA9_BRANCH: 15.0
+
+jobs:
+  source-audit:
+    name: Source Lock & Audit
+    runs-on: ubuntu-24.04
+
+    steps:
+      # ============================================================
+      # 1. PREPARE HOST
+      # ============================================================
+      - name: Prepare host
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "===== HOST ====="
+          uname -a
+          echo
+          echo "===== CPU ====="
+          nproc
+          echo
+          echo "===== OS ====="
+          cat /etc/os-release
+          echo
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            git \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            device-tree-compiler \
+            python3 \
+            file \
+            cpio \
+            rsync
+
+      # ============================================================
+      # 2. CLONE EXACT GTA9 SOURCE BRANCH
+      # ============================================================
+      - name: Clone GTA9 kernel source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf kernel_samsung_gta9
+
+          git clone \
+            --branch "${GTA9_BRANCH}" \
+            --single-branch \
+            "${GTA9_REPO}" \
+            kernel_samsung_gta9
+
+          cd kernel_samsung_gta9
+
+          echo "===== REPOSITORY ====="
+          git remote -v
+          echo
+
+          echo "===== BRANCH ====="
+          git branch --show-current
+          echo
+
+          echo "===== COMMIT ====="
+          git rev-parse HEAD
+          echo
+
+          echo "===== COMMIT SUBJECT ====="
+          git log -1 --format='%h %s'
+          echo
+
+          echo "===== TAG ====="
+          git describe --tags --always --dirty || true
+
+      # ============================================================
+      # 3. KERNEL VERSION AUDIT
+      # ============================================================
+      - name: Audit kernel version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd kernel_samsung_gta9
+
+          echo "===== KERNEL VERSION FILES ====="
+
+          if [ -f Makefile ]; then
+            grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)[[:space:]]*=' \
+              Makefile || true
+          fi
+
+          echo
+          echo "===== KERNEL CONFIG VERSION REFERENCES ====="
+
+          grep -RIn \
+            --include='*.config' \
+            --include='*defconfig' \
+            -E 'Linux/arm64|CONFIG_LOCALVERSION|CONFIG_VERSION' \
+            arch/arm64/configs 2>/dev/null \
+            | head -n 100 || true
+
+      # ============================================================
+      # 4. DEFCONFIG / BUILD CONFIG AUDIT
+      # ============================================================
+      - name: Audit build configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd kernel_samsung_gta9
+
+          echo "===== DEFCONFIG FILES ====="
+          find arch/arm64/configs \
+            -maxdepth 1 \
+            -type f \
+            -printf '%p\n' \
+            | sort
+
+          echo
+          echo "===== BUILD.CONFIG FILES ====="
+          find . \
+            -type f \
+            \( -name 'build.config*' -o -name 'build.sh' \) \
+            -print \
+            | sort
+
+          echo
+          echo "===== GTA9 REFERENCES ====="
+          find . \
+            -type f \
+            \( -name '*defconfig' -o -name 'build.config*' \) \
+            -print \
+            | xargs grep -nEi \
+              'gta9|x110|mt8781|mt6789' \
+              2>/dev/null \
+            | head -n 200 || true
+
+      # ============================================================
+      # 5. GKI AUDIT
+      # ============================================================
+      - name: Audit GKI indicators
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd kernel_samsung_gta9
+
+          echo "=========================================="
+          echo " GKI INDICATOR AUDIT"
+          echo "=========================================="
+
+          echo
+          echo "---- build.config.gki ----"
+          find . \
+            -type f \
+            -name 'build.config.gki*' \
+            -print \
+            | sort || true
+
+          echo
+          echo "---- GKI/KMI references ----"
+          grep -RIn \
+            --exclude-dir=.git \
+            -E \
+            'gki_defconfig|KMI|KERNEL_ABI|TRIM_NONLISTED_KMI|KMI_SYMBOL_LIST' \
+            . \
+            2>/dev/null \
+            | head -n 200 || true
+
+          echo
+          echo "NOTE:"
+          echo "Presence of a GKI-related file alone does NOT prove X110 is GKI."
+
+      # ============================================================
+      # 6. SAMSUNG SECURITY AUDIT
+      # ============================================================
+      - name: Audit Samsung security components
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd kernel_samsung_gta9
+
+          echo "=========================================="
+          echo " SAMSUNG SECURITY AUDIT"
+          echo "=========================================="
+
+          echo
+          echo "---- DEFEX ----"
+          grep -RIn \
+            --exclude-dir=.git \
+            -E \
+            'CONFIG_SECURITY_DEFEX|DEFEX|task_defex_enforce' \
+            . \
+            2>/dev/null \
+            | head -n 150 || true
+
+          echo
+          echo "---- KNOX_NCM ----"
+          grep -RIn \
+            --exclude-dir=.git \
+            -E \
+            'CONFIG_KNOX_NCM|KNOX_NCM' \
+            . \
+            2>/dev/null \
+            | head -n 150 || true
+
+          echo
+          echo "---- PROCA / KDP ----"
+          grep -RIn \
+            --exclude-dir=.git \
+            -E \
+            'PROCA|KDP' \
+            security \
+            arch \
+            fs \
+            include \
+            2>/dev/null \
+            | head -n 200 || true
+
+          echo
+          echo "---- Requested old Samsung symbols ----"
+          grep -RIn \
+            --exclude-dir=.git \
+            -E \
+            'CONFIG_SEC_RESTRICT_FORK|CONFIG_SEC_RESTRICT_ROOTMOD|SEC_RESTRICT_FORK|SEC_RESTRICT_ROOTMOD|CONFIG_KNOX_KAP' \
+            . \
+            2>/dev/null \
+            | head -n 100 || true
+
+      # ============================================================
+      # 7. GTA9 DTB / DTBO AUDIT
+      # ============================================================
+      - name: Audit GTA9 Device Tree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd kernel_samsung_gta9
+
+          echo "=========================================="
+          echo " GTA9 DEVICE TREE AUDIT"
+          echo "=========================================="
+
+          echo
+          echo "---- GTA9 DTS files ----"
+          find arch/arm64/boot/dts \
+            -type f \
+            \( -name '*gta9*.dts' -o -name '*gta9*.dtsi' \) \
+            -print \
+            | sort
+
+          echo
+          echo "---- MT8781 references ----"
+          grep -RIn \
+            --include='*.dts' \
+            --include='*.dtsi' \
+            --include='*defconfig' \
+            -E \
+            'mt8781|gta9_eur_open_00|DTB_OVERLAY' \
+            arch/arm64 \
+            2>/dev/null \
+            | head -n 250 || true
+
+      # ============================================================
+      # 8. REsukiSU / KSU PRESENCE AUDIT
+      #    We do NOT inject anything yet.
+      # ============================================================
+      - name: Audit existing KernelSU/ReSukiSU state
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd kernel_samsung_gta9
+
+          echo "=========================================="
+          echo " KSU / ReSukiSU AUDIT"
+          echo "=========================================="
+
+          echo
+          echo "---- drivers/kernelsu ----"
+          if [ -d drivers/kernelsu ]; then
+            echo "FOUND: drivers/kernelsu"
+            find drivers/kernelsu \
+              -maxdepth 2 \
+              -type f \
+              | sort \
+              | head -n 100
+          else
+            echo "NOT FOUND"
+          fi
+
+          echo
+          echo "---- KSU symbols ----"
+          grep -RIn \
+            --exclude-dir=.git \
+            -E \
+            'CONFIG_KSU|KSU' \
+            drivers/Kconfig \
+            drivers \
+            arch/arm64/configs \
+            2>/dev/null \
+            | head -n 200 || true
+
+      # ============================================================
+      # 9. GENERATE MACHINE-READABLE SOURCE REPORT
+      # ============================================================
+      - name: Generate source report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd kernel_samsung_gta9
+
+          {
+            echo "RESUKISU V2 - GTA9 SOURCE AUDIT"
+            echo "================================"
+            echo
+            echo "Repository:"
+            git remote get-url origin
+            echo
+            echo "Branch:"
+            git branch --show-current
+            echo
+            echo "Commit:"
+            git rev-parse HEAD
+            echo
+            echo "Commit subject:"
+            git log -1 --format='%s'
+            echo
+            echo "Kernel Makefile:"
+            grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)[[:space:]]*=' Makefile || true
+            echo
+            echo "GTA9 DTS:"
+            find arch/arm64/boot/dts \
+              -type f \
+              \( -name '*gta9*.dts' -o -name '*gta9*.dtsi' \) \
+              -print \
+              | sort
+            echo
+            echo "KSU directory:"
+            if [ -d drivers/kernelsu ]; then
+              echo "PRESENT"
+            else
+              echo "ABSENT"
+            fi
+          } > ../source-audit.txt
+
+          cat ../source-audit.txt
+
+      # ============================================================
+      # 10. UPLOAD AUDIT ARTIFACT
+      # ============================================================
+      - name: Upload source audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: gta9-source-audit
+          path: source-audit.txt
+          if-no-files-found: error
