@@ -127,18 +127,33 @@ jobs:
           required=(
             CONFIG_CUSTOM_PROJECT_OT11
             CONFIG_CUSTOM_PROJECT_OT11_WIFI
-            CONFIG_MTK_FPSGO_V3
             CONFIG_ARCH_MEDIATEK
             CONFIG_ANDROID
-            CONFIG_LTO
-            CONFIG_LTO_CLANG
-            CONFIG_LTO_CLANG_FULL
           )
 
+          echo "===== REQUIRED X110 IDENTITY CONFIG ====="
           for key in "${required[@]}"; do
-            grep -q "^$key=" STOCK_DERIVED_CONFIG_NORMALIZED
+            if grep -q "^$key=" STOCK_DERIVED_CONFIG_NORMALIZED; then
+              grep "^$key=" STOCK_DERIVED_CONFIG_NORMALIZED
+            else
+              echo "ERROR: required config missing: $key" >&2
+              exit 1
+            fi
           done
 
+          echo
+          echo "===== SOURCE COMPATIBILITY NOTES ====="
+          echo "CONFIG_MTK_FPSGO_V3 is NOT a Kconfig symbol in the GTA9 15.0 source;"
+          echo "it exists in the stock/legacy defconfig but is discarded by olddefconfig."
+          echo "Therefore it must not be used as a hard gate for this 15.0 source scaffold."
+
+          echo
+          echo "===== LTO MODE AFTER NORMALIZATION ====="
+          grep -E '^(CONFIG_LTO=|CONFIG_LTO_CLANG=|CONFIG_LTO_CLANG_FULL=|CONFIG_LTO_CLANG_THIN=)' STOCK_DERIVED_CONFIG_NORMALIZED || true
+          echo "LTO is informational at Stage 1 because the source's ot11 configuration uses ThinLTO"
+          echo "while the stock reference requests Full LTO."
+
+          echo
           echo "STOCK-DERIVED CONFIG: PASS"
 
       - name: Build kernel base without RESUKISU or KernelSU changes
