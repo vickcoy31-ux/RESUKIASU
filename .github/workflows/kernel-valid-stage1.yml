@@ -84,14 +84,17 @@ jobs:
             -o /tmp/clang-r416183b.tar.gz
           tar -xzf /tmp/clang-r416183b.tar.gz -C toolchain
 
-          test -x toolchain/clang-r416183b/bin/clang || test -x toolchain/bin/clang
-
           if [ -x toolchain/clang-r416183b/bin/clang ]; then
-            echo "CLANG_DIR=$PWD/toolchain/clang-r416183b" >> "$GITHUB_ENV"
+            export CLANG_DIR="$PWD/toolchain/clang-r416183b"
+          elif [ -x toolchain/bin/clang ]; then
+            export CLANG_DIR="$PWD/toolchain"
           else
-            echo "CLANG_DIR=$PWD/toolchain" >> "$GITHUB_ENV"
+            echo "ERROR: clang binary not found after extraction" >&2
+            exit 1
           fi
 
+          echo "CLANG_DIR=$CLANG_DIR" >> "$GITHUB_ENV"
+          echo "===== CLANG VERSION ====="
           "$CLANG_DIR/bin/clang" --version
 
       - name: Prepare stock-derived configuration
