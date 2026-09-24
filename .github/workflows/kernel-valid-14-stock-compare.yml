@@ -1,0 +1,318 @@
+name: GTA9 14.0 - Stock 5.10.205 Validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  GTA9_REPO: https://github.com/prabhatkrmishra/kernel_samsung_gta9.git
+  GTA9_BRANCH: "14.0"
+  STOCK_RUN_ID: "36024263408"
+  STOCK_ARTIFACT: RESUKISU-V2-stock-510205-deep-compare
+  ARCH: arm64
+  LLVM: "1"
+
+jobs:
+  validate-gta9-14:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout RESUKISU repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison flex build-essential \
+            git curl wget python3 cpio rsync \
+            libssl-dev libelf-dev libncurses5-dev \
+            device-tree-compiler gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            lz4 xz-utils file gzip
+
+      - name: Download exact stock forensic artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p stock_reference
+          gh run download "$STOCK_RUN_ID" \
+            --repo "${{ github.repository }}" \
+            --name "$STOCK_ARTIFACT" \
+            --dir stock_reference
+
+          test -s stock_reference/stock_audit/stock.config
+          test -s stock_reference/stock_audit/boot/kernel
+          test -s stock_reference/stock_audit/vendor_boot/dtb
+
+          echo "===== STOCK FILES ====="
+          file stock_reference/stock_audit/boot/kernel
+          file stock_reference/stock_audit/vendor_boot/dtb
+          sha256sum \
+            stock_reference/stock_audit/stock.config \
+            stock_reference/stock_audit/boot/kernel \
+            stock_reference/stock_audit/vendor_boot/dtb
+
+      - name: Clone GTA9 14.0 source
+        run: |
+          set -euo pipefail
+          git clone \
+            --branch "$GTA9_BRANCH" \
+            --single-branch \
+            --recurse-submodules \
+            "$GTA9_REPO" \
+            kernel_samsung_gta9
+
+          cd kernel_samsung_gta9
+
+          echo "===== SOURCE LOCK =====" | tee ../SOURCE_14_LOCK.txt
+          echo "Repository: $GTA9_REPO" | tee -a ../SOURCE_14_LOCK.txt
+          echo "Branch: $GTA9_BRANCH" | tee -a ../SOURCE_14_LOCK.txt
+          echo "Commit: $(git rev-parse HEAD)" | tee -a ../SOURCE_14_LOCK.txt
+          echo "Kernel version: $(make -s kernelversion)" | tee -a ../SOURCE_14_LOCK.txt
+          echo "Expected stock: 5.10.205-android12-9-28698995" | tee -a ../SOURCE_14_LOCK.txt
+
+          test "$(make -s kernelversion)" = "5.10.205"
+
+      - name: Verify 14.0 device source identity
+        run: |
+          set -euo pipefail
+          cd kernel_samsung_gta9
+
+          echo "===== GTA9 14.0 DEFCONFIG IDENTITY ====="
+          grep -E 'CONFIG_(CUSTOM_PROJECT_OT11|CUSTOM_PROJECT_OT11_WIFI|ARCH_MEDIATEK|ANDROID|MTK_FPSGO_V3|LTO=|LTO_CLANG=|LTO_CLANG_FULL=|LTO_CLANG_THIN=)' \
+            arch/arm64/configs/gta9_defconfig || true
+
+          echo
+          echo "===== GTA9 DEVICE TREE FILES ====="
+          find arch/arm64/boot/dts/mediatek -maxdepth 1 -type f \
+            | grep -E 'gta9|mt8781' | sort | head -n 100
+
+      - name: Install Samsung Android kernel Clang r416183b
+        run: |
+          set -euo pipefail
+          mkdir -p toolchain
+          curl -L --fail --retry 3 \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-12.1.0_r7/clang-r416183b.tar.gz" \
+            -o /tmp/clang-r416183b.tar.gz
+          tar -xzf /tmp/clang-r416183b.tar.gz -C toolchain
+
+          if [ -x toolchain/clang-r416183b/bin/clang ]; then
+            export CLANG_DIR="$PWD/toolchain/clang-r416183b"
+          elif [ -x toolchain/bin/clang ]; then
+            export CLANG_DIR="$PWD/toolchain"
+          else
+            echo "ERROR: clang binary not found" >&2
+            exit 1
+          fi
+
+          echo "CLANG_DIR=$CLANG_DIR" >> "$GITHUB_ENV"
+          "$CLANG_DIR/bin/clang" --version
+          "$CLANG_DIR/bin/ld.lld" --version
+
+      - name: Derive config from exact stock config
+        run: |
+          set -euo pipefail
+          cd kernel_samsung_gta9
+
+          export PATH="$CLANG_DIR/bin:$PATH"
+          export ARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+
+          cp ../stock_reference/stock_audit/stock.config .config
+
+          echo "===== STOCK CONFIG VERSION ====="
+          grep -E '^(CONFIG_CC_VERSION_TEXT|CONFIG_CLANG_VERSION|CONFIG_LLD_VERSION)=' .config || true
+
+          make ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
+
+          cp .config ../CONFIG_STOCK_14_NORMALIZED
+
+      - name: Compare stock config to 14.0 normalized config
+        run: |
+          set -euo pipefail
+          cd kernel_samsung_gta9
+
+          echo "===== CONFIG DIFFERENCE ====="
+          if diff -u ../stock_reference/stock_audit/stock.config .config > ../CONFIG_STOCK_VS_14.diff; then
+            echo "CONFIG EXACT MATCH: YES"
+          else
+            echo "CONFIG EXACT MATCH: NO"
+            echo "Differences are recorded in CONFIG_STOCK_VS_14.diff"
+            diff -u ../stock_reference/stock_audit/stock.config .config | head -n 250 || true
+          fi
+
+          echo
+          echo "===== CRITICAL DEVICE CONFIG ====="
+          grep -E '^(CONFIG_CUSTOM_PROJECT_OT11|CONFIG_CUSTOM_PROJECT_OT11_WIFI|CONFIG_ARCH_MEDIATEK|CONFIG_ANDROID|CONFIG_MTK_FPSGO_V3|CONFIG_LTO=|CONFIG_LTO_CLANG=|CONFIG_LTO_CLANG_FULL=|CONFIG_LTO_CLANG_THIN=)' .config || true
+
+      - name: Prepare build configuration without Samsung internal ABI path
+        run: |
+          set -euo pipefail
+          cd kernel_samsung_gta9
+
+          export PATH="$CLANG_DIR/bin:$PATH"
+          export ARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+
+          echo "===== REMOVE SAMSUNG INTERNAL ABI WHITELIST PATH ====="
+          grep -n 'CONFIG_\(TRIM_UNUSED_KSYMS\|UNUSED_SYMBOLS_WHITELIST\)' .config || true
+
+          sed -i 's/^CONFIG_TRIM_UNUSED_KSYMS=.*/# CONFIG_TRIM_UNUSED_KSYMS is not set/' .config
+          sed -i 's/^CONFIG_UNUSED_SYMBOLS_WHITELIST=.*/CONFIG_UNUSED_SYMBOLS_WHITELIST=""/' .config
+
+          make ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
+
+          grep -E '^(# CONFIG_TRIM_UNUSED_KSYMS is not set|CONFIG_UNUSED_SYMBOLS_WHITELIST=)' .config
+
+      - name: Build 14.0 kernel and GTA9 WiFi DTB
+        run: |
+          set -euo pipefail
+          cd kernel_samsung_gta9
+
+          export PATH="$CLANG_DIR/bin:$PATH"
+          export ARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+          export CROSS_COMPILE=aarch64-linux-gnu-
+
+          echo "===== BUILD VERSION ====="
+          make -s kernelversion
+          clang --version | head -n 1
+          ld.lld --version | head -n 1
+
+          echo "===== BUILD IMAGE.GZ ====="
+          make -j"$(nproc)" \
+            ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            Image.gz
+
+          echo "===== BUILD GTA9 WIFI DTB ====="
+          make -j"$(nproc)" \
+            ARCH=arm64 LLVM=1 LLVM_IAS=1 \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            mt8781_gta9wifi_eur_open_00.dtb
+
+          test -s arch/arm64/boot/Image.gz
+          test -s arch/arm64/boot/dts/mediatek/mt8781_gta9wifi_eur_open_00.dtb
+          test -s vmlinux
+
+      - name: Forensic comparison against stock kernel and DTB
+        run: |
+          set -euo pipefail
+
+          BUILT=kernel_samsung_gta9
+          STOCK=stock_reference/stock_audit
+
+          echo "===== HASHES ====="
+          sha256sum \
+            "$BUILT/arch/arm64/boot/Image.gz" \
+            "$BUILT/arch/arm64/boot/dts/mediatek/mt8781_gta9wifi_eur_open_00.dtb" \
+            "$STOCK/boot/kernel" \
+            "$STOCK/vendor_boot/dtb"
+
+          echo
+          echo "===== BUILT KERNEL FILE ====="
+          file "$BUILT/arch/arm64/boot/Image.gz"
+          echo
+          echo "===== STOCK KERNEL FILE ====="
+          file "$STOCK/boot/kernel"
+
+          echo
+          echo "===== BUILT KERNEL STRINGS ====="
+          gzip -dc "$BUILT/arch/arm64/boot/Image.gz" > /tmp/built.Image
+          strings -a /tmp/built.Image | grep -E 'Linux version|5\.10\.' | head -n 20 || true
+
+          echo
+          echo "===== STOCK KERNEL STRINGS ====="
+          strings -a "$STOCK/boot/kernel" | grep -E 'Linux version|5\.10\.' | head -n 20 || true
+
+          echo
+          echo "===== EMBEDDED CONFIG CHECK ====="
+          if [ -x "$BUILT/scripts/extract-ikconfig" ]; then
+            "$BUILT/scripts/extract-ikconfig" "$STOCK/boot/kernel" > /tmp/stock_embedded.config 2>/dev/null || true
+            "$BUILT/scripts/extract-ikconfig" "$BUILT/vmlinux" > /tmp/built_embedded.config 2>/dev/null || true
+          fi
+
+          if [ -s /tmp/stock_embedded.config ] && [ -s /tmp/built_embedded.config ]; then
+            echo "Embedded stock config extracted: YES"
+            diff -u /tmp/stock_embedded.config /tmp/built_embedded.config | head -n 250 || true
+          else
+            echo "Embedded config extraction unavailable; stock.config remains authoritative reference."
+          fi
+
+          echo
+          echo "===== DTB DECOMPILE COMPARISON ====="
+          dtc -I dtb -O dts -o /tmp/built.dts \
+            "$BUILT/arch/arm64/boot/dts/mediatek/mt8781_gta9wifi_eur_open_00.dtb" \
+            2>/tmp/built_dtc.err || true
+
+          dtc -I dtb -O dts -o /tmp/stock.dts \
+            "$STOCK/vendor_boot/dtb" \
+            2>/tmp/stock_dtc.err || true
+
+          if [ -s /tmp/built.dts ] && [ -s /tmp/stock.dts ]; then
+            echo "DTB decompile: PASS"
+            echo "===== DTB COMPATIBLE/MODEL ====="
+            grep -E 'compatible =|model =|bootargs =|serial-number =|board' /tmp/built.dts | head -n 80 || true
+            echo "--- STOCK ---"
+            grep -E 'compatible =|model =|bootargs =|serial-number =|board' /tmp/stock.dts | head -n 80 || true
+
+            diff -u /tmp/stock.dts /tmp/built.dts > DTB_STOCK_VS_14.diff || true
+            echo "DTB diff saved to DTB_STOCK_VS_14.diff"
+          else
+            echo "DTB decompile was not possible for one or both files."
+            cat /tmp/stock_dtc.err || true
+            cat /tmp/built_dtc.err || true
+          fi
+
+          echo
+          echo "===== VERSION / IDENTITY VERDICT ====="
+          echo "Source Makefile: $(cd "$BUILT" && make -s kernelversion)"
+          echo "Stock reference: 5.10.205-android12-9-28698995"
+          echo "Exact binary SHA match is NOT required for a source validation."
+          echo "The important checks are source version, device identity, config compatibility, DTB compatibility, and reproducible build success."
+
+          cat > VALIDATION_14_RESULT.txt <<EOF
+GTA9 14.0 STOCK VALIDATION
+==========================
+Source: $GTA9_REPO
+Branch: $GTA9_BRANCH
+Source commit: $(cd "$BUILT" && git rev-parse HEAD)
+Source kernelversion: $(cd "$BUILT" && make -s kernelversion)
+Stock reference: 5.10.205-android12-9-28698995
+
+BUILD:
+  Image.gz: PASS
+  GTA9 WiFi DTB: PASS
+
+COMPARISON:
+  stock.config vs normalized source config: see CONFIG_STOCK_VS_14.diff
+  stock kernel vs rebuilt kernel: forensic comparison performed
+  stock vendor_boot DTB vs rebuilt GTA9 DTB: see DTB_STOCK_VS_14.diff when decompile succeeds
+
+NOTE:
+  Binary SHA equality is not expected from a normal rebuild because build metadata and packaging can differ.
+  This workflow does not modify kernel functionality or add ReSukiSU/KernelSU.
+EOF
+
+      - name: Upload GTA9 14.0 validation report
+        uses: actions/upload-artifact@v4
+        with:
+          name: GTA9-14.0-STOCK-VALIDATION
+          path: |
+            SOURCE_14_LOCK.txt
+            CONFIG_STOCK_14_NORMALIZED
+            CONFIG_STOCK_VS_14.diff
+            DTB_STOCK_VS_14.diff
+            VALIDATION_14_RESULT.txt
+            kernel_samsung_gta9/arch/arm64/boot/Image.gz
+            kernel_samsung_gta9/arch/arm64/boot/dts/mediatek/mt8781_gta9wifi_eur_open_00.dtb
