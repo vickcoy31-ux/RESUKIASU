@@ -9,7 +9,7 @@ permissions:
 env:
   ARCH: arm64
   GTA9_REPO: https://github.com/prabhatkrmishra/kernel_samsung_gta9.git
-  GTA9_BRANCH: 15.0
+  GTA9_BRANCH: "15.0"
   STOCK_KERNEL_TARGET: 5.10.205
 
 jobs:
