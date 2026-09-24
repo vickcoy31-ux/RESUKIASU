@@ -156,6 +156,25 @@ jobs:
           echo
           echo "STOCK-DERIVED CONFIG: PASS"
 
+      - name: Prepare kernel build configuration
+        run: |
+          set -euo pipefail
+          cd kernel_samsung_gta9
+
+          export PATH="$CLANG_DIR/bin:$PATH"
+          export ARCH=arm64
+          export LLVM=1
+          export LLVM_IAS=1
+
+          echo "===== DISABLE SAMSUNG ABI WHITELIST TRIMMING ====="
+          echo "The stock defconfig points CONFIG_UNUSED_SYMBOLS_WHITELIST at a Samsung-internal build path."
+          echo "That file does not exist on the GitHub Actions runner, so TRIM_UNUSED_KSYMS must be disabled for Stage 1."
+          sed -i 's/^CONFIG_TRIM_UNUSED_KSYMS=.*/# CONFIG_TRIM_UNUSED_KSYMS is not set/' .config
+          sed -i 's/^CONFIG_UNUSED_SYMBOLS_WHITELIST=.*/CONFIG_UNUSED_SYMBOLS_WHITELIST=""/' .config
+          make ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
+
+          grep -E '^(# CONFIG_TRIM_UNUSED_KSYMS is not set|CONFIG_UNUSED_SYMBOLS_WHITELIST=)' .config
+
       - name: Build kernel base without RESUKISU or KernelSU changes
         run: |
           set -euo pipefail
