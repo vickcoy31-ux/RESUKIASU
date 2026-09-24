@@ -1,6 +1,9 @@
 name: GTA9 14.0 - Stock 5.10.205 Validation
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
