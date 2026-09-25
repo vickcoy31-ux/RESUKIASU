@@ -15,6 +15,10 @@ on:
         required: true
         default: false
         type: boolean
+  push:
+    branches: [gta9-14-safety-mmu]
+    paths:
+      - ".github/workflows/kintil.yml"
 
 permissions:
   contents: read
