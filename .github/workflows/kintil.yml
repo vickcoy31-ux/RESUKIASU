@@ -15,6 +15,10 @@ on:
         required: true
         default: false
         type: boolean
+  push:
+    branches: [gta9-14-safety-mmu]
+    paths:
+      - ".github/workflows/kintil.yml"
 
 permissions:
   contents: read
@@ -60,9 +64,9 @@ jobs:
       - name: Download exact stock reference
         uses: actions/download-artifact@v4
         with:
-          name: \${{ env.STOCK_ARTIFACT }}
-          run-id: \${{ env.STOCK_RUN_ID }}
-          github-token: \${{ github.token }}
+          name: ${{ env.STOCK_ARTIFACT }}
+          run-id: ${{ env.STOCK_RUN_ID }}
+          github-token: ${{ github.token }}
           path: stock_reference
 
       - name: Lock stock baseline
@@ -497,7 +501,7 @@ jobs:
             kernel_samsung_gta9/out/arch/arm64/boot/dts/mediatek/mt8781_gta9_eur_open_00.dtbo
 
       - name: Flash safety abort
-        if: \${{ inputs.flash_requested == true }}
+        if: ${{ inputs.flash_requested == true }}
         shell: bash
         run: |
           set -euo pipefail
