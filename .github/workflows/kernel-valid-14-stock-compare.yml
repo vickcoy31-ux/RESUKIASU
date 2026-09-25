@@ -1,23 +1,64 @@
-name: GTA9 14.0 - Stock Safety Validation
+#!/usr/bin/env bash
+set -euo pipefail
 
-on:
-  workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/kernel-valid-14-stock-compare.yml"
-      - ".github/workflows/kintil.yml"
+SOURCE_DIR="${1:?Usage: mutation-audit.sh <source-dir> <baseline> <report>}"
+BASELINE_FILE="${2:?Usage: mutation-audit.sh <source-dir> <baseline> <report>}"
+REPORT_FILE="${3:?Usage: mutation-audit.sh <source-dir> <baseline> <report>}"
 
-permissions:
-  contents: read
-  actions: read
+mkdir -p "$(dirname "$REPORT_FILE")"
 
-jobs:
-  validate:
-    name: GTA9 14 safety core
-    uses: ./.github/workflows/kintil.yml
-    with:
-      flash_requested: false
-    permissions:
-      contents: read
-      actions: read
+test -d "$SOURCE_DIR"
+test -f "$BASELINE_FILE"
+
+current_file="$(mktemp)"
+current_manifest="$(mktemp)"
+
+cleanup() {
+  rm -f "$current_file" "$current_manifest"
+}
+trap cleanup EXIT
+
+(
+  cd "$SOURCE_DIR"
+
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+
+    hash="${line%% *}"
+    file="${line#*  }"
+
+    if [[ ! -f "$file" ]]; then
+      echo "ERROR: protected file is missing: $file" >&2
+      exit 1
+    fi
+
+    sha256sum "$file"
+  done < "$BASELINE_FILE"
+) > "$current_file"
+
+awk '{print $2 " " $1}' "$current_file" | sort > "$current_manifest"
+awk '{print $2 " " $1}' "$BASELINE_FILE" | sort > baseline.manifest
+
+if ! diff -u baseline.manifest "$current_manifest" > /tmp/mmu-mutation.diff; then
+  {
+    echo "MMU SOURCE MUTATION AUDIT"
+    echo "========================="
+    echo "STATUS=FAIL"
+    echo
+    cat /tmp/mmu-mutation.diff
+  } | tee "$REPORT_FILE"
+
+  rm -f baseline.manifest
+  exit 1
+fi
+
+rm -f baseline.manifest
+
+{
+  echo "MMU SOURCE MUTATION AUDIT"
+  echo "========================="
+  echo "STATUS=PASS"
+  echo "All protected MMU files match the locked baseline."
+  echo
+  cat "$current_file"
+} | tee "$REPORT_FILE"
