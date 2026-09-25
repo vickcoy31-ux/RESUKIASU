@@ -1,6 +1,13 @@
 name: kintil
 
 on:
+  workflow_call:
+    inputs:
+      flash_requested:
+        description: "Safety-gate only; this workflow never flashes a device"
+        required: false
+        default: false
+        type: boolean
   workflow_dispatch:
     inputs:
       flash_requested:
