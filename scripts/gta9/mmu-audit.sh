@@ -14,6 +14,7 @@ BASELINE=${4:-}
 [ -n "$SRC" ] && [ -d "$SRC" ] || usage
 [ -n "$CFG" ] && [ -f "$CFG" ] || { echo "MMU AUDIT: config missing: $CFG"; exit 1; }
 [ -n "$REPORT" ] || usage
+[ -z "$BASELINE" ] || BASELINE=$(realpath "$BASELINE")
 
 mkdir -p "$(dirname "$REPORT")"
 fail=0
