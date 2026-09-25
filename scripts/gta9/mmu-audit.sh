@@ -55,7 +55,7 @@ expect_cfg() {
   echo
   echo "Protected MMU source hashes:"
   if [ -n "$BASELINE" ] && [ -f "$BASELINE" ]; then
-    if sha256sum -c "$BASELINE"; then
+    if ( cd "$SRC" && sha256sum -c "$BASELINE" ); then
       echo "MMU_SOURCE_HASH=PASS"
     else
       echo "MMU_SOURCE_HASH=FAIL"
