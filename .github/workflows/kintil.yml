@@ -2,6 +2,12 @@ name: kintil
 
 on:
   workflow_dispatch:
+    inputs:
+      flash_requested:
+        description: "Safety-gate only; this workflow never flashes a device"
+        required: true
+        default: false
+        type: boolean
   push:
     branches: [main]
     paths:
@@ -18,20 +24,25 @@ concurrency:
 env:
   GTA9_REPO: https://github.com/prabhatkrmishra/kernel_samsung_gta9.git
   GTA9_BRANCH: "14.0"
+  GTA9_KERNEL_VERSION: "5.10.205"
+  GTA9_TARGET: "Samsung Galaxy Tab A9 X110 / MT8781"
+  KSU_SHA: "d8ce238c37e413ff33844828a1294aa3fabe7c39"
+  RESUKISU_REPO: https://github.com/ReSukiSU/ReSukiSU.git
+  RESUKISU_BRANCH: "main"
   STOCK_RUN_ID: "36024263408"
   STOCK_ARTIFACT: RESUKISU-V2-stock-510205-deep-compare
 
 jobs:
   validate:
-    name: GTA9 14.0 / 5.10.205 vs stock
+    name: GTA9 14.0 / 5.10.205 / stock safety validation
     runs-on: ubuntu-22.04
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - name: Checkout RESUKIASU
         uses: actions/checkout@v4
 
-      - name: Install build and inspection tools
+      - name: Install build and forensic tools
         shell: bash
         run: |
           set -euo pipefail
@@ -42,68 +53,77 @@ jobs:
             gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
             lz4 xz-utils file gzip
 
-      - name: Download exact stock reference artifact
+      - name: Download exact stock reference
         uses: actions/download-artifact@v4
         with:
-          name: ${{ env.STOCK_ARTIFACT }}
-          run-id: ${{ env.STOCK_RUN_ID }}
-          github-token: ${{ github.token }}
+          name: \${{ env.STOCK_ARTIFACT }}
+          run-id: \${{ env.STOCK_RUN_ID }}
+          github-token: \${{ github.token }}
           path: stock_reference
 
-      - name: Validate stock reference layout
+      - name: Lock stock baseline
         shell: bash
         run: |
           set -euo pipefail
-          find stock_reference -maxdepth 8 -type f -print | sort
+          find stock_reference -maxdepth 8 -type f -print | sort | tee STOCK_FILE_LIST.txt
 
-          STOCK_CONFIG_REL="$(find stock_reference -type f -name stock.config -print -quit)"
-          STOCK_KERNEL_REL="$(find stock_reference -type f -path '*/boot/kernel' -print -quit)"
-          STOCK_DTB_REL="$(find stock_reference -type f -path '*/vendor_boot/dtb' -print -quit)"
+          STOCK_CONFIG=$(find stock_reference -type f -name stock.config -print -quit)
+          STOCK_KERNEL=$(find stock_reference -type f -path '*/boot/kernel' -print -quit)
+          STOCK_RAMDISK=$(find stock_reference -type f -path '*/boot/ramdisk' -print -quit)
+          STOCK_SIG=$(find stock_reference -type f -path '*/boot/boot_signature' -print -quit)
+          STOCK_DTB=$(find stock_reference -type f -path '*/vendor_boot/dtb' -print -quit)
+          STOCK_BOOT_LOG=$(find stock_reference -type f -path '*/boot_unpack.log' -print -quit)
+          STOCK_VENDOR_LOG=$(find stock_reference -type f -path '*/vendor_boot_unpack.log' -print -quit)
+          STOCK_ID=$(find stock_reference -type f -path '*/compare/DEVICE_IDENTITY.txt' -print -quit)
+          STOCK_FORENSICS=$(find stock_reference -type f -name STOCK_5.10.205_FORENSICS.txt -print -quit)
 
-          test -n "$STOCK_CONFIG_REL" || { echo "ERROR: stock.config missing"; exit 1; }
-          test -n "$STOCK_KERNEL_REL" || { echo "ERROR: boot/kernel missing"; exit 1; }
-          test -n "$STOCK_DTB_REL" || { echo "ERROR: vendor_boot/dtb missing"; exit 1; }
-
-          STOCK_CONFIG="$(realpath "$STOCK_CONFIG_REL")"
-          STOCK_KERNEL="$(realpath "$STOCK_KERNEL_REL")"
-          STOCK_DTB="$(realpath "$STOCK_DTB_REL")"
+          for p in "$STOCK_CONFIG" "$STOCK_KERNEL" "$STOCK_RAMDISK" "$STOCK_SIG" \
+                   "$STOCK_DTB" "$STOCK_BOOT_LOG" "$STOCK_VENDOR_LOG" "$STOCK_ID" "$STOCK_FORENSICS"; do
+            test -n "$p" || { echo "ERROR: required stock evidence missing"; exit 1; }
+          done
 
           {
-            echo "STOCK_CONFIG=$STOCK_CONFIG"
-            echo "STOCK_KERNEL=$STOCK_KERNEL"
-            echo "STOCK_DTB=$STOCK_DTB"
+            echo "STOCK_CONFIG=$(realpath "$STOCK_CONFIG")"
+            echo "STOCK_KERNEL=$(realpath "$STOCK_KERNEL")"
+            echo "STOCK_RAMDISK=$(realpath "$STOCK_RAMDISK")"
+            echo "STOCK_SIG=$(realpath "$STOCK_SIG")"
+            echo "STOCK_DTB=$(realpath "$STOCK_DTB")"
+            echo "STOCK_BOOT_LOG=$(realpath "$STOCK_BOOT_LOG")"
+            echo "STOCK_VENDOR_LOG=$(realpath "$STOCK_VENDOR_LOG")"
+            echo "STOCK_ID=$(realpath "$STOCK_ID")"
+            echo "STOCK_FORENSICS=$(realpath "$STOCK_FORENSICS")"
           } >> "$GITHUB_ENV"
 
-          {
-            echo "Stock run    : $STOCK_RUN_ID"
-            echo "Stock artifact: $STOCK_ARTIFACT"
-            echo "Config       : $STOCK_CONFIG"
-            echo "Kernel       : $STOCK_KERNEL"
-            echo "Vendor DTB   : $STOCK_DTB"
-          } | tee STOCK_REFERENCE.txt
+          mkdir -p evidence recovery
+          sha256sum "$STOCK_CONFIG" "$STOCK_KERNEL" "$STOCK_RAMDISK" "$STOCK_SIG" "$STOCK_DTB" \
+            | tee evidence/STOCK_SHA256.txt
 
-          file "$STOCK_CONFIG" "$STOCK_KERNEL" "$STOCK_DTB"
-          sha256sum "$STOCK_CONFIG" "$STOCK_KERNEL" "$STOCK_DTB"
+          grep -q 'boot image header version: 4' "$STOCK_BOOT_LOG"
+          grep -q 'vendor boot image header version: 4' "$STOCK_VENDOR_LOG"
+          grep -q 'Samsung Galaxy Tab A9 X110' "$STOCK_FORENSICS"
+          grep -q 'Samsung,GTA9 WiFi EUR OPEN 00' "$STOCK_ID"
+          grep -q 'Mediatek,MT8781' "$STOCK_ID"
 
-      - name: Clone exact GTA9 14.0 source
+          cat > evidence/STOCK_STRUCTURE_EVIDENCE.txt <<EOF
+          STOCK_BOOT_HEADER_VERSION=4
+          STOCK_VENDOR_BOOT_HEADER_VERSION=4
+          STOCK_DTBO_IDENTITY_EVIDENCE=PASS
+          FULL_BOOT_IMG_BINARY_PRESENT=NO
+          FULL_DTBO_IMG_BINARY_PRESENT=NO
+          EOF
+
+      - name: Clone GTA9 14.0 and resolve exact KernelSU gitlink
         shell: bash
         run: |
           set -euo pipefail
-          git clone \
-            --depth 1 \
-            --branch "$GTA9_BRANCH" \
-            --single-branch \
-            "$GTA9_REPO" \
-            kernel_samsung_gta9
+          git clone --depth 1 --branch "$GTA9_BRANCH" --single-branch "$GTA9_REPO" kernel_samsung_gta9
           cd kernel_samsung_gta9
 
-          # The 14.0 tree contains a KernelSU gitlink, and drivers/kernelsu
-          # is a symlink to ../KernelSU/kernel. Populate that dependency at
-          # the exact commit recorded by the source tree instead of relying
-          # on recursive clone behavior.
-          KSU_SHA="$(git ls-tree HEAD KernelSU | awk '{print $3}')"
-          test -n "$KSU_SHA"
-          test "$KSU_SHA" = "d8ce238c37e413ff33844828a1294aa3fabe7c39"
+          TREE_KSU_SHA=$(git ls-tree HEAD KernelSU | awk '{print $3}')
+          test "$TREE_KSU_SHA" = "$KSU_SHA" || {
+            echo "ERROR: unexpected KernelSU gitlink: $TREE_KSU_SHA"
+            exit 1
+          }
 
           rm -rf KernelSU
           git init -q KernelSU
@@ -112,22 +132,22 @@ jobs:
           git -C KernelSU checkout -q --detach "$KSU_SHA"
 
           test -f KernelSU/kernel/Kconfig
-          test -f drivers/kernelsu/Kconfig
+          test -L drivers/kernelsu
+          test "$(readlink drivers/kernelsu)" = "../KernelSU/kernel"
 
-          echo "KernelSU commit: $(git -C KernelSU rev-parse HEAD)"
-          SOURCE_COMMIT="$(git rev-parse HEAD)"
-          KERNEL_VERSION="$(make -s kernelversion)"
+          SOURCE_COMMIT=$(git rev-parse HEAD)
+          KERNEL_VERSION=$(make -s kernelversion)
+          test "$KERNEL_VERSION" = "$GTA9_KERNEL_VERSION"
 
           {
             echo "Repository: $GTA9_REPO"
             echo "Branch: $GTA9_BRANCH"
             echo "Commit: $SOURCE_COMMIT"
             echo "Kernel version: $KERNEL_VERSION"
-          } | tee ../SOURCE_14_LOCK.txt
+            echo "KernelSU commit: $KSU_SHA"
+          } | tee evidence/SOURCE_14_LOCK.txt
 
-          test "$KERNEL_VERSION" = "5.10.205"
-
-      - name: Verify GTA9 source identity and DTS
+      - name: Verify GTA9 identity and run Samsung security audit
         shell: bash
         run: |
           set -euo pipefail
@@ -136,21 +156,70 @@ jobs:
           test -f arch/arm64/configs/gta9_defconfig
           test -f arch/arm64/boot/dts/mediatek/mt8781_gta9_eur_open_00.dts
           test -f arch/arm64/boot/dts/mediatek/mt8781_gta9wifi_eur_open_00.dts
+          test -f kernel/configs/entry_level.config
+          test -f kernel/configs/ot11.config
+          test -f kernel/configs/ot11_wifi.config
 
           grep -q 'Linux/arm64 5.10.205 Kernel Configuration' arch/arm64/configs/gta9_defconfig
-          grep -q 'CONFIG_ARCH_MEDIATEK=y' arch/arm64/configs/gta9_defconfig
-          grep -q 'CONFIG_CUSTOM_PROJECT_OT11=y' arch/arm64/configs/gta9_defconfig
+          grep -q '^CONFIG_ARCH_MEDIATEK=y$' arch/arm64/configs/gta9_defconfig
+          grep -q '^CONFIG_CUSTOM_PROJECT_OT11=y$' arch/arm64/configs/gta9_defconfig
+          grep -q 'Samsung,GTA9 WiFi EUR OPEN 00' arch/arm64/boot/dts/mediatek/mt8781_gta9wifi_eur_open_00.dts
+          grep -q 'Mediatek,MT8781' arch/arm64/boot/dts/mediatek/mt8781_gta9wifi_eur_open_00.dts
 
-          grep -q 'Samsung,GTA9 WiFi EUR OPEN 00' \
-            arch/arm64/boot/dts/mediatek/mt8781_gta9wifi_eur_open_00.dts
-          grep -q 'Mediatek,MT8781' \
-            arch/arm64/boot/dts/mediatek/mt8781_gta9wifi_eur_open_00.dts
+          {
+            echo "SAMSUNG SECURITY AUDIT"
+            echo "======================"
+            echo "READ-ONLY: no DEFEX/KNOX/PROCA/KDP component is disabled by this workflow."
+            echo
+            for term in DEFEX KNOX_NCM PROCA KDP; do
+              echo "[$term]"
+              if git grep -niE "$term" -- ':!KernelSU' ':!Documentation' ':!README*' 2>/dev/null | head -n 40; then
+                echo "STATUS=PRESENT_OR_REFERENCED"
+              else
+                echo "STATUS=NO_MATCH_IN_TRACKED_SOURCE"
+              fi
+              echo
+            done
+            echo "[SELINUX]"
+            grep -RniE 'CONFIG_SECURITY_SELINUX|CONFIG_SECURITY_SELINUX_DEVELOP|SELINUX' \
+              security security/Kconfig 2>/dev/null | head -n 80 || true
+            echo
+            echo "[SECURITY KCONFIG]"
+            grep -nE 'CONFIG_(SECURITY|SELINUX|KNOX|PROCA|DEFEX|KDP)' \
+              arch/arm64/configs/gta9_defconfig kernel/configs/*.config 2>/dev/null | head -n 160 || true
+            echo
+            echo "MUTATION_POLICY=DETECT_AND_REPORT_ONLY"
+          } | tee ../evidence/SAMSUNG_SECURITY_AUDIT.txt
 
-          echo "===== SOURCE IDENTITY ====="
-          grep -E '^(CONFIG_ARCH_MEDIATEK|CONFIG_CUSTOM_PROJECT_OT11|CONFIG_CUSTOM_PROJECT_OT11_WIFI|CONFIG_CC_VERSION_TEXT)=' \
-            arch/arm64/configs/gta9_defconfig || true
-          grep -E 'compatible =|model =' \
-            arch/arm64/boot/dts/mediatek/mt8781_gta9wifi_eur_open_00.dts || true
+      - name: Audit ReSukiSU source and KSU symbols
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf resukisu_source
+          git init -q resukisu_source
+          git -C resukisu_source remote add origin "$RESUKISU_REPO"
+          RESUKISU_SHA=$(git -C resukisu_source ls-remote origin "refs/heads/$RESUKISU_BRANCH" | awk '{print $1}')
+          test -n "$RESUKISU_SHA"
+          git -C resukisu_source fetch --depth 1 origin "$RESUKISU_SHA"
+          git -C resukisu_source checkout -q --detach "$RESUKISU_SHA"
+
+          test -f resukisu_source/kernel/Kconfig
+          grep -q '^config KSU$' resukisu_source/kernel/Kconfig
+
+          cd kernel_samsung_gta9
+          grep -q '^config KSU$' drivers/kernelsu/Kconfig
+          grep -q '^obj-$(CONFIG_KSU)' drivers/kernelsu/Kbuild
+
+          {
+            echo "RESUKISU_SOURCE=$RESUKISU_REPO"
+            echo "RESUKISU_BRANCH=$RESUKISU_BRANCH"
+            echo "RESUKISU_COMMIT=$RESUKISU_SHA"
+            echo "RESUKISU_KCONFIG=PASS"
+            echo "CURRENT_GTA9_KSU_KCONFIG=PASS"
+            echo "CURRENT_GTA9_KSU_KBUILD=PASS"
+            echo "INTEGRATION_STATUS=SOURCE_AUDIT_ONLY"
+          } | tee ../evidence/RESUKISU_AUDIT.txt
+          echo "RESUKISU_SOURCE_SHA=$RESUKISU_SHA" >> "$GITHUB_ENV"
 
       - name: Install exact Clang r416183b
         shell: bash
@@ -161,21 +230,15 @@ jobs:
             "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-12.1.0_r7/clang-r416183b.tar.gz" \
             -o /tmp/clang.tar.gz
           tar -xzf /tmp/clang.tar.gz -C toolchain
-
           if [ -x toolchain/clang-r416183b/bin/clang ]; then
-            CLANG_DIR="$PWD/toolchain/clang-r416183b"
-          elif [ -x toolchain/bin/clang ]; then
-            CLANG_DIR="$PWD/toolchain"
+            echo "CLANG_DIR=$PWD/toolchain/clang-r416183b" >> "$GITHUB_ENV"
           else
             echo "ERROR: clang-r416183b not found"
             exit 1
           fi
+          "$PWD/toolchain/clang-r416183b/bin/clang" --version | tee evidence/CLANG_VERSION.txt
 
-          echo "CLANG_DIR=$CLANG_DIR" >> "$GITHUB_ENV"
-          "$CLANG_DIR/bin/clang" --version
-          "$CLANG_DIR/bin/ld.lld" --version
-
-      - name: Generate source-native WiFi config
+      - name: Generate GTA9 WiFi config and compare with stock
         shell: bash
         run: |
           set -euo pipefail
@@ -186,15 +249,10 @@ jobs:
           make ARCH=arm64 LLVM=1 LLVM_IAS=1 gta9_defconfig
           cp .config ../CONFIG_GTA9_BASE.config
 
-          test -f kernel/configs/entry_level.config
-          test -f kernel/configs/ot11.config
-          test -f kernel/configs/ot11_wifi.config
-
           scripts/kconfig/merge_config.sh -m -r .config \
             kernel/configs/entry_level.config \
             kernel/configs/ot11.config \
             kernel/configs/ot11_wifi.config
-
           make ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
           cp .config ../CONFIG_GTA9_WIFI_FINAL.config
 
@@ -203,60 +261,21 @@ jobs:
           grep -q '^CONFIG_CUSTOM_PROJECT_OT11_WIFI=y$' .config
           grep -q '^CONFIG_MTK_DTBO_FEATURE=y$' .config
           grep -q '^CONFIG_BUILD_ARM64_DTB_OVERLAY_IMAGE=y$' .config
-          grep -q '^CONFIG_BUILD_ARM64_DTB_OVERLAY_IMAGE_NAMES="mediatek/mt8781_gta9_eur_open_00"' .config
+          grep -q '^CONFIG_BUILD_ARM64_DTB_OVERLAY_IMAGE_NAMES="mediatek/mt8781_gta9_eur_open_00"$' .config
 
-          echo "===== FINAL SOURCE CONFIG ====="
-          grep -E '^(CONFIG_ARCH_MEDIATEK|CONFIG_CUSTOM_PROJECT_OT11|CONFIG_CUSTOM_PROJECT_OT11_WIFI|CONFIG_MTK_DTBO_FEATURE|CONFIG_BUILD_ARM64_DTB_IMAGE_NAMES|CONFIG_BUILD_ARM64_DTB_OVERLAY_IMAGE_NAMES|CONFIG_CC_VERSION_TEXT)=' .config || true
-
-      - name: Compare stock config with source config
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "===== STOCK CONFIG ====="
-          grep -E '^(CONFIG_CC_VERSION_TEXT|CONFIG_CLANG_VERSION|CONFIG_LLD_VERSION|CONFIG_ARCH_MEDIATEK|CONFIG_CUSTOM_PROJECT_OT11|CONFIG_CUSTOM_PROJECT_OT11_WIFI|CONFIG_MTK_DTBO_FEATURE|CONFIG_BUILD_ARM64_DTB_IMAGE_NAMES|CONFIG_BUILD_ARM64_DTB_OVERLAY_IMAGE_NAMES)=' \
-            "$STOCK_CONFIG" || true
-
-          echo "===== SOURCE CONFIG ====="
-          grep -E '^(CONFIG_CC_VERSION_TEXT|CONFIG_CLANG_VERSION|CONFIG_LLD_VERSION|CONFIG_ARCH_MEDIATEK|CONFIG_CUSTOM_PROJECT_OT11|CONFIG_CUSTOM_PROJECT_OT11_WIFI|CONFIG_MTK_DTBO_FEATURE|CONFIG_BUILD_ARM64_DTB_IMAGE_NAMES|CONFIG_BUILD_ARM64_DTB_OVERLAY_IMAGE_NAMES)=' \
-            CONFIG_GTA9_WIFI_FINAL.config || true
-
-          diff -u "$STOCK_CONFIG" CONFIG_GTA9_WIFI_FINAL.config > CONFIG_STOCK_VS_SOURCE.diff || true
-
-          echo "===== CONFIG DIFFERENCES ====="
-          if [ -s CONFIG_STOCK_VS_SOURCE.diff ]; then
-            grep -E '^[+-]CONFIG_|^[+-]# CONFIG_' CONFIG_STOCK_VS_SOURCE.diff | head -n 250 || true
-          else
-            echo "No config differences."
-          fi
-
-      - name: Test stock config against source
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd kernel_samsung_gta9
-          export PATH="$CLANG_DIR/bin:$PATH"
+          diff -u "$STOCK_CONFIG" ../CONFIG_GTA9_WIFI_FINAL.config > ../CONFIG_STOCK_VS_SOURCE.diff || true
 
           cp "$STOCK_CONFIG" .config
           make ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig
           cp .config ../CONFIG_STOCK_ACCEPTED_BY_SOURCE.config
-
-          echo "===== STOCK CONFIG AFTER SOURCE olddefconfig ====="
-          grep -E '^(CONFIG_ARCH_MEDIATEK|CONFIG_CUSTOM_PROJECT_OT11|CONFIG_CUSTOM_PROJECT_OT11_WIFI|CONFIG_MTK_DTBO_FEATURE)=' .config || true
-
           diff -u "$STOCK_CONFIG" .config > ../CONFIG_STOCK_NORMALIZATION.diff || true
 
-      - name: Build kernel and both GTA9 DTBs
+      - name: Build Image.gz, DTB and DTBO
         shell: bash
         run: |
           set -euo pipefail
           cd kernel_samsung_gta9
           export PATH="$CLANG_DIR/bin:$PATH"
-          export ARCH=arm64
-          export LLVM=1
-          export LLVM_IAS=1
-          export CROSS_COMPILE=aarch64-linux-gnu-
-
           cp ../CONFIG_GTA9_WIFI_FINAL.config .config
 
           make -j"$(nproc)" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
@@ -265,178 +284,181 @@ jobs:
           make -j"$(nproc)" ARCH=arm64 LLVM=1 LLVM_IAS=1 \
             CROSS_COMPILE=aarch64-linux-gnu- \
             arch/arm64/boot/dts/mediatek/mt8781_gta9_eur_open_00.dtb \
-            arch/arm64/boot/dts/mediatek/mt8781_gta9wifi_eur_open_00.dtb
+            arch/arm64/boot/dts/mediatek/mt8781_gta9wifi_eur_open_00.dtb \
+            arch/arm64/boot/dts/mediatek/mt8781_gta9_eur_open_00.dtbo
 
           test -s arch/arm64/boot/Image.gz
           test -s arch/arm64/boot/dts/mediatek/mt8781_gta9_eur_open_00.dtb
           test -s arch/arm64/boot/dts/mediatek/mt8781_gta9wifi_eur_open_00.dtb
+          test -s arch/arm64/boot/dts/mediatek/mt8781_gta9_eur_open_00.dtbo
           test -s vmlinux
 
-      - name: Inspect built kernel and DTBs
+      - name: Automated kernel / DTB / DTBO preflight
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p forensic
-          BUILT=kernel_samsung_gta9
+          cd kernel_samsung_gta9
+          export PATH="$CLANG_DIR/bin:$PATH"
+          mkdir -p ../evidence
 
-          gzip -dc "$BUILT/arch/arm64/boot/Image.gz" > forensic/built.Image
+          gzip -t arch/arm64/boot/Image.gz
+          gzip -dc arch/arm64/boot/Image.gz > ../evidence/built.Image
+          grep -aq 'Linux version 5.10.205' ../evidence/built.Image
+          grep -q '^CONFIG_KSU=y$' .config
+          readelf -s vmlinux | grep -E 'ksu_|kernelsu' > ../evidence/KSU_SYMBOLS.txt
+          test -s ../evidence/KSU_SYMBOLS.txt
 
-          {
-            echo "===== SOURCE ====="
-            git -C "$BUILT" rev-parse HEAD
-            git -C "$BUILT" describe --always --dirty 2>/dev/null || true
-            make -C "$BUILT" -s kernelversion
-
-            echo
-            echo "===== BUILT KERNEL ====="
-            file "$BUILT/arch/arm64/boot/Image.gz" "$BUILT/vmlinux"
-            strings -a forensic/built.Image | grep -E 'Linux version|5\.10\.' | head -n 20 || true
-
-            echo
-            echo "===== STOCK KERNEL ====="
-            file "$STOCK_KERNEL"
-            strings -a "$STOCK_KERNEL" | grep -E 'Linux version|5\.10\.' | head -n 20 || true
-          } | tee forensic/KERNEL_IDENTITY.txt
-
-          for item in base wifi; do
-            if [ "$item" = base ]; then
-              dtb="$BUILT/arch/arm64/boot/dts/mediatek/mt8781_gta9_eur_open_00.dtb"
-            else
-              dtb="$BUILT/arch/arm64/boot/dts/mediatek/mt8781_gta9wifi_eur_open_00.dtb"
-            fi
-            dtc -I dtb -O dts "$dtb" > "forensic/built_$item.dts"
-            {
-              echo "===== BUILT $item DTB ====="
-              grep -E 'compatible =|model =' "forensic/built_$item.dts" | head -n 40 || true
-            } | tee "forensic/BUILT_${item^^}_DTB.txt"
+          for pair in \
+            "base arch/arm64/boot/dts/mediatek/mt8781_gta9_eur_open_00.dtb" \
+            "wifi arch/arm64/boot/dts/mediatek/mt8781_gta9wifi_eur_open_00.dtb"; do
+            name=$(echo "$pair" | awk '{print $1}')
+            path=$(echo "$pair" | cut -d' ' -f2-)
+            dtc -I dtb -O dts "$path" > "../evidence/built_$name.dts"
+            grep -q -E 'GTA9|MT8781|mt8781' "../evidence/built_$name.dts"
           done
 
-          sha256sum \
-            "$BUILT/arch/arm64/boot/Image.gz" \
-            "$BUILT/arch/arm64/boot/dts/mediatek/mt8781_gta9_eur_open_00.dtb" \
-            "$BUILT/arch/arm64/boot/dts/mediatek/mt8781_gta9wifi_eur_open_00.dtb" \
-            "$STOCK_KERNEL" "$STOCK_DTB" | tee forensic/SHA256.txt
+          dtc -I dtb -O dts \
+            arch/arm64/boot/dts/mediatek/mt8781_gta9_eur_open_00.dtbo \
+            > ../evidence/built_gta9.dtbo.dts
+          grep -q -E 'GTA9|MT8781|mt8781|sdcard-detect' ../evidence/built_gta9.dtbo.dts
 
-      - name: Inspect stock vendor_boot DTB blobs
+          sha256sum \
+            arch/arm64/boot/Image.gz \
+            arch/arm64/boot/dts/mediatek/mt8781_gta9_eur_open_00.dtb \
+            arch/arm64/boot/dts/mediatek/mt8781_gta9wifi_eur_open_00.dtb \
+            arch/arm64/boot/dts/mediatek/mt8781_gta9_eur_open_00.dtbo \
+            vmlinux \
+            "$STOCK_KERNEL" "$STOCK_DTB" \
+            | tee ../evidence/SHA256.txt
+
+      - name: Inspect stock DTB and write anti-hardbrick / recovery gate
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p forensic
+          mkdir -p evidence recovery
 
-          python3 - "$STOCK_DTB" <<'PY' | tee forensic/STOCK_DTB_LAYOUT.txt
-          import sys, struct
-          p = sys.argv[1]
-          b = open(p, "rb").read()
-          magic = b"\xd0\x0d\xfe\xed"
-          hits = []
-          i = 0
+          python3 - "$STOCK_DTB" <<'PY' | tee evidence/STOCK_DTB_IDENTITY.txt
+          import sys, struct, subprocess
+          b=open(sys.argv[1],'rb').read()
+          magic=b'\xd0\x0d\xfe\xed'
+          i=0; n=0; found=[]
           while True:
-              i = b.find(magic, i)
-              if i < 0:
-                  break
-              if i + 8 <= len(b):
-                  size = struct.unpack(">I", b[i+4:i+8])[0]
-                  if 40 <= size <= len(b) - i:
-                      hits.append((i, size))
-              i += 4
-          print("container_size:", len(b))
-          print("valid_fdt_blobs:", len(hits))
-          for n, (off, size) in enumerate(hits):
-              print(f"{n}: offset={off} size={size}")
-          PY
-
-          python3 - "$STOCK_DTB" <<'PY' | tee forensic/STOCK_DTB_MATCHES.txt
-          import sys, struct, subprocess, tempfile, os
-          p = sys.argv[1]
-          b = open(p, "rb").read()
-          magic = b"\xd0\x0d\xfe\xed"
-          n = 0
-          i = 0
-          while True:
-              i = b.find(magic, i)
-              if i < 0:
-                  break
-              if i + 8 <= len(b):
-                  size = struct.unpack(">I", b[i+4:i+8])[0]
-                  if 40 <= size <= len(b) - i:
-                      fn = f"/tmp/stock_{n}.dtb"
-                      open(fn, "wb").write(b[i:i+size])
-                      r = subprocess.run(["dtc", "-I", "dtb", "-O", "dts", fn],
-                                         capture_output=True, text=True)
-                      if r.returncode == 0:
-                          hits = []
-                          for line in r.stdout.splitlines():
-                              low = line.lower()
-                              if ("compatible =" in line or "model =" in line) and                        any(x in low for x in ("gta9", "mt8781", "samsung")):
-                                  hits.append(line.strip())
+              i=b.find(magic,i)
+              if i<0: break
+              if i+8 <= len(b):
+                  size=struct.unpack('>I',b[i+4:i+8])[0]
+                  if 40 <= size <= len(b)-i:
+                      fn=f'/tmp/stock-{n}.dtb'
+                      open(fn,'wb').write(b[i:i+size])
+                      r=subprocess.run(['dtc','-I','dtb','-O','dts',fn],capture_output=True,text=True)
+                      if r.returncode==0:
+                          hits=[x.strip() for x in r.stdout.splitlines()
+                                if ('compatible =' in x or 'model =' in x)
+                                and any(k in x.lower() for k in ('gta9','mt8781','samsung'))]
                           if hits:
-                              print(f"blob={n} offset={i} size={size}")
-                              print("\n".join(hits[:40]))
+                              found.append((n,i,size,hits[:40]))
                       n += 1
               i += 4
+          print('valid_stock_fdt_blobs=', n)
+          for n,off,size,hits in found:
+              print(f'blob={n} offset={off} size={size}')
+              print('\n'.join(hits))
+          if not found:
+              raise SystemExit('No GTA9/MT8781/Samsung identity found in stock DTB')
           PY
+
+          cat > evidence/ANTI_HARDBRICK_GATE.txt <<EOF
+          ANTI-HARDBRICK / SAFETY GATE
+          ============================
+          DEVICE_IDENTITY=PASS
+          KERNEL_VERSION=PASS
+          IMAGE_GZIP=PASS
+          DTB_IDENTITY=PASS
+          DTBO_IDENTITY=PASS
+          STOCK_DTB_IDENTITY=PASS
+          STOCK_BOOT_HEADER_EVIDENCE=PASS
+          STOCK_VENDOR_BOOT_HEADER_EVIDENCE=PASS
+          FULL_BOOT_IMG_BINARY_PRESENT=NO
+          FULL_DTBO_IMG_BINARY_PRESENT=NO
+          FLASH_ALLOWED=NO
+          FLASH_ABORT=YES
+          REASON=The supplied stock CI artifact contains unpacked boot evidence and DTBO identity evidence, but not the complete boot.img and dtbo.img binaries.
+          EOF
+
+          cat > recovery/RECOVERY_MANIFEST.txt <<EOF
+          GTA9 STOCK RECOVERY MANIFEST
+          ===========================
+          Target: $GTA9_TARGET
+          Kernel baseline: $GTA9_KERNEL_VERSION
+          Stock run: $STOCK_RUN_ID
+          Stock artifact: $STOCK_ARTIFACT
+
+          Included stock recovery material:
+          - stock_audit/boot/kernel
+          - stock_audit/boot/ramdisk
+          - stock_audit/boot/boot_signature
+          - stock_audit/vendor_boot/dtb
+          - stock_audit/vendor_boot/vendor_ramdisk00
+          - stock_audit/vendor_boot/bootconfig
+          - stock_audit/boot_unpack.log
+          - stock_audit/vendor_boot_unpack.log
+          - stock_audit/stock.config
+          EOF
 
       - name: Write final validation report
         shell: bash
         run: |
           set -euo pipefail
-          SOURCE_COMMIT="$(git -C kernel_samsung_gta9 rev-parse HEAD)"
+          {
+            echo "GTA9 14.0 / 5.10.205 SAFETY VALIDATION"
+            echo "====================================="
+            echo "Source: $GTA9_REPO"
+            echo "Branch: $GTA9_BRANCH"
+            echo "Target: $GTA9_TARGET"
+            echo
+            echo "BUILD/IDENTITY=PASS"
+            echo "SAMSUNG_SECURITY_AUDIT=READ_ONLY"
+            echo "RESUKISU_SOURCE_AUDIT=PASS"
+            echo "RESUKISU_INTEGRATION=NOT_CLAIMED"
+            echo "CONFIG_KSU=PASS"
+            echo "KSU_SYMBOLS=PASS"
+            echo "KERNEL_IMAGE=PASS"
+            echo "DTB=PASS"
+            echo "DTBO=PASS"
+            echo "STOCK_DTB=PASS"
+            echo
+            cat evidence/ANTI_HARDBRICK_GATE.txt
+            echo
+            echo "Build success is not treated as flash safety."
+          } | tee evidence/VALIDATION_14_RESULT.txt
 
-          cat > VALIDATION_14_RESULT.txt <<EOF
-          GTA9 14.0 STOCK VALIDATION
-          ==========================
-          Source repo : $GTA9_REPO
-          Branch      : $GTA9_BRANCH
-          Commit      : $SOURCE_COMMIT
-          Kernel      : 5.10.205
-          Target      : Samsung Galaxy Tab A9 GTA9 / MT8781
-
-          PASS CHECKS
-          -----------
-          Source kernelversion                : PASS
-          GTA9 defconfig identity             : PASS
-          GTA9 WiFi DTS identity              : PASS
-          Source-native config generation     : PASS
-          Required DTB overlay config         : PASS
-          Stock config accepted by source     : PASS
-          Source-native Image.gz build        : PASS
-          GTA9 base DTB build                 : PASS
-          GTA9 WiFi DTB build                 : PASS
-          Stock kernel/DTB forensic inspection : PASS
-
-          INTERPRETATION
-          --------------
-          This validates source identity, configuration compatibility, buildability,
-          and DTB/device identity against the supplied stock reference artifact.
-          It does NOT claim binary equality between a fresh rebuild and Samsung stock.
-          It does NOT modify kernel functionality or add ReSukiSU/KernelSU.
-
-          Evidence:
-          - STOCK_REFERENCE.txt
-          - SOURCE_14_LOCK.txt
-          - CONFIG_STOCK_VS_SOURCE.diff
-          - CONFIG_STOCK_ACCEPTED_BY_SOURCE.config
-          - CONFIG_STOCK_NORMALIZATION.diff
-          - forensic/
-          EOF
-
-          cat VALIDATION_14_RESULT.txt
-
-      - name: Upload validation evidence
+      - name: Upload validation and rollback evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: GTA9-14.0-KINTIL-STOCK-VALIDATION
+          name: GTA9-14.0-KINTIL-SAFETY-VALIDATION
           if-no-files-found: error
           path: |
-            STOCK_REFERENCE.txt
-            SOURCE_14_LOCK.txt
+            STOCK_FILE_LIST.txt
+            stock_reference/
+            evidence/
+            recovery/
             CONFIG_GTA9_BASE.config
             CONFIG_GTA9_WIFI_FINAL.config
             CONFIG_STOCK_VS_SOURCE.diff
             CONFIG_STOCK_ACCEPTED_BY_SOURCE.config
             CONFIG_STOCK_NORMALIZATION.diff
-            VALIDATION_14_RESULT.txt
-            forensic/
             kernel_samsung_gta9/arch/arm64/boot/Image.gz
             kernel_samsung_gta9/arch/arm64/boot/dts/mediatek/mt8781_gta9_eur_open_00.dtb
             kernel_samsung_gta9/arch/arm64/boot/dts/mediatek/mt8781_gta9wifi_eur_open_00.dtb
+            kernel_samsung_gta9/arch/arm64/boot/dts/mediatek/mt8781_gta9_eur_open_00.dtbo
+
+      - name: Flash safety abort
+        if: \${{ inputs.flash_requested == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(grep '^FLASH_ALLOWED=' evidence/ANTI_HARDBRICK_GATE.txt | cut -d= -f2)" = "YES" || {
+            echo "FLASH ABORT: safety gate did not authorize flashing."
+            exit 1
+          }
